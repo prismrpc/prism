@@ -20,6 +20,9 @@ exclude = [
 
     # SQLite connection strings (not URLs)
     "^sqlite://",
+
+    # GitHub release tags
+    "^https://github\\.com/prismrpc/prism/releases/tag/",
 ]
 
 # Include patterns - check these markdown files
