@@ -1,0 +1,50 @@
+# Lychee configuration for documentation link checking
+# See: https://github.com/lycheeverse/lychee
+
+# Maximum number of redirects to follow
+max_redirects = 5
+
+# Maximum number of retries per link
+max_retries = 3
+
+# Exclude localhost and local network URLs
+exclude_link_local = true
+
+# Additional URL exclusions (regex patterns)
+exclude = [
+    # Localhost variations - use regex for reliable matching
+    "^http://localhost(:\\d+)?/?",
+    "^https://localhost(:\\d+)?/?",
+    "^http://127\\.0\\.0\\.1(:\\d+)?/?",
+    "^https://127\\.0\\.0\\.1(:\\d+)?/?",
+
+    # SQLite connection strings (not URLs)
+    "^sqlite://",
+]
+
+# Include patterns - check these markdown files
+include = [
+    "./docs/**/*.md",
+    "./.github/**/*.md",
+    "./README.md",
+    "./CHANGELOG.md",
+]
+
+# Accept status codes (200-299 are successful by default)
+# Add others if needed, e.g., 429 for rate-limited but valid links
+# accept = [200, 429]
+
+# Timeout per request in seconds
+timeout = 20
+
+# Maximum number of concurrent requests
+max_concurrency = 10
+
+# User agent string
+user_agent = "lychee/prism-docs-checker"
+
+# Show verbose output
+verbose = "info"
+
+# Don't show progress bar (better for CI)
+no_progress = true

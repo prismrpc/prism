@@ -1,0 +1,41 @@
+[profile.default]
+# Run tests in parallel
+test-threads = "auto"
+
+# Retry failed tests once
+retries = 1
+
+# Timeout for individual tests (in seconds)
+timeout = 300
+
+# Output format
+output = { type = "pretty" }
+
+[profile.default.env]
+# Set environment variables for tests
+RUST_BACKTRACE = "1"
+
+[profile.ci]
+# CI-specific profile
+inherits = "default"
+test-threads = "auto"
+retries = 2
+timeout = 600
+
+[profile.ci.env]
+RUST_BACKTRACE = "1"
+RUST_LOG = "debug"
+
+# Override settings specifically for e2e tests to prevent Geth node crashes
+[[profile.default.overrides]]
+filter = 'package(tests) and test(e2e::) and not test(e2e::failover)'
+test-threads = 4  # Run e2e tests with max 4 concurrent threads to prevent overwhelming Geth nodes
+retries = 2  # Retry flaky e2e tests twice
+
+# Failover tests MUST run serially and alone because they stop/start Docker containers
+# Running these concurrently with other tests causes cascading failures
+[[profile.default.overrides]]
+filter = 'package(tests) and test(e2e::failover)'
+test-threads = 1  # Run failover tests one at a time
+retries = 1  # Single retry since these are deterministic when isolated
+timeout = 120  # 2 minutes per failover test

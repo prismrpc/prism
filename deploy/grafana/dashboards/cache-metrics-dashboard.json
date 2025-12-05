@@ -1,0 +1,90 @@
+{
+  "uid": "rpc-aggregator-cache",
+  "id": null,
+  "title": "Cache Metrics",
+  "tags": ["rpc", "cache", "performance"],
+  "style": "dark",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "panels": [
+    {
+      "id": 1,
+      "title": "Overall Cache Hit Rate",
+      "type": "stat",
+      "description": "Combined cache hit rate across all methods",
+      "targets": [
+        {
+          "expr": "sum(rate(rpc_cache_hits_total[5m])) / (sum(rate(rpc_cache_hits_total[5m])) + sum(rate(rpc_cache_misses_total[5m]))) * 100",
+          "legendFormat": "Hit Rate",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ],
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 70 },
+              { "color": "green", "value": 90 }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Cache Hit/Miss Rate by Method",
+      "type": "timeseries",
+      "description": "Cache hits and misses per RPC method",
+      "targets": [
+        {
+          "expr": "rate(rpc_cache_hits_total[5m])",
+          "legendFormat": "{{method}} - hits",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        },
+        {
+          "expr": "rate(rpc_cache_misses_total[5m])",
+          "legendFormat": "{{method}} - misses",
+          "datasource": { "type": "prometheus", "uid": "prometheus" }
+        }
+      ],
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "yAxes": [
+        {
+          "label": "Operations/sec",
+          "min": 0
+        }
+      ]
+    }
+  ],
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "refresh": "5s",
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "editable": true,
+  "graphTooltip": 0,
+  "links": []
+}

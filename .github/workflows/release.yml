@@ -1,0 +1,382 @@
+# =============================================================================
+# Prism RPC Aggregator - Release Workflow
+# Builds and publishes binaries for multiple platforms on version tags
+# =============================================================================
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'  # Triggers on version tags like v0.1.0, v1.2.3
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run (build only, skip push/release)'
+        type: boolean
+        default: true
+      test_version:
+        description: 'Test version (e.g., 0.0.0-test)'
+        default: '0.0.0-test'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Get Version (always runs)
+  # ---------------------------------------------------------------------------
+  get-version:
+    name: Get Version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.get_version.outputs.version }}
+      dry_run: ${{ steps.check_dry_run.outputs.dry_run }}
+    steps:
+      - name: Get version from tag or input
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ inputs.test_version }}" >> $GITHUB_OUTPUT
+            echo "Using test version: ${{ inputs.test_version }}"
+          else
+            VERSION="${GITHUB_REF#refs/tags/v}"
+            echo "version=${VERSION}" >> $GITHUB_OUTPUT
+            echo "Using tag version: ${VERSION}"
+          fi
+
+      - name: Check if dry run
+        id: check_dry_run
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry_run }}" = "true" ]; then
+            echo "dry_run=true" >> $GITHUB_OUTPUT
+            echo " DRY RUN MODE - will build but skip publishing"
+          else
+            echo "dry_run=false" >> $GITHUB_OUTPUT
+            echo " RELEASE MODE - will build and publish"
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Create GitHub Release (skip during dry run)
+  # ---------------------------------------------------------------------------
+  create-release:
+    name: Create Release
+    needs: get-version
+    if: ${{ needs.get-version.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.get-version.outputs.version }}
+          name: Prism v${{ needs.get-version.outputs.version }}
+          draft: false
+          prerelease: ${{ contains(needs.get-version.outputs.version, '-rc') || contains(needs.get-version.outputs.version, '-beta') || contains(needs.get-version.outputs.version, '-alpha') }}
+          generate_release_notes: true
+          body: |
+            ## Prism RPC Aggregator v${{ needs.get-version.outputs.version }}
+
+            High-performance Ethereum RPC aggregator with intelligent caching and load balancing.
+
+            ### Installation
+
+            **Docker (Recommended):**
+            ```bash
+            docker pull ghcr.io/prismrpc/prism:${{ needs.get-version.outputs.version }}
+            ```
+
+            **Binary:**
+            Download the appropriate binary for your platform below, extract, and run:
+            ```bash
+            tar xzf prism-<platform>.tar.gz
+            ./prism-server
+            ```
+
+            ### Quick Start
+
+            See the [Deployment Guide](https://github.com/prismrpc/prism/blob/main/docs/deployment.md) for complete instructions.
+
+            ### Checksums
+
+            Each binary archive has a corresponding `.sha256` file for verification.
+
+  # ---------------------------------------------------------------------------
+  # Build Release Binaries
+  # ---------------------------------------------------------------------------
+  build-binaries:
+    name: Build ${{ matrix.name }}
+    needs: get-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 (glibc)
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            name: linux-x86_64
+            archive: prism-linux-x86_64.tar.gz
+
+          # Linux x86_64 (musl - static binary)
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            name: linux-x86_64-musl
+            archive: prism-linux-x86_64-musl.tar.gz
+
+          # Linux ARM64
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            name: linux-arm64
+            archive: prism-linux-arm64.tar.gz
+
+          # macOS x86_64 (Intel)
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            name: darwin-x86_64
+            archive: prism-darwin-x86_64.tar.gz
+
+          # macOS ARM64 (Apple Silicon)
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            name: darwin-arm64
+            archive: prism-darwin-arm64.tar.gz
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: nightly-2025-12-03
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation dependencies (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          if [ "${{ matrix.cross }}" = "true" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+          fi
+
+      - name: Setup sccache
+        uses: mozilla-actions/sccache-action@v0.0.9
+
+      - name: Configure sccache
+        run: |
+          echo "SCCACHE_GHA_ENABLED=true" >> $GITHUB_ENV
+          echo "RUSTC_WRAPPER=sccache" >> $GITHUB_ENV
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: "release-${{ matrix.target }}"
+          cache-on-failure: true
+
+      - name: Configure cross-compilation
+        if: matrix.cross == true
+        run: |
+          mkdir -p .cargo
+          echo '[target.aarch64-unknown-linux-gnu]' >> .cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
+
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }} --bin server --bin cli
+
+      - name: Create archive
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/server dist/prism-server
+          cp target/${{ matrix.target }}/release/cli dist/prism-cli
+          cp README.md dist/
+          cp LICENSE dist/ 2>/dev/null || echo "No LICENSE file"
+          cp config/config.toml dist/config.example.toml
+          cd dist
+          tar czf ../${{ matrix.archive }} *
+          cd ..
+          sha256sum ${{ matrix.archive }} > ${{ matrix.archive }}.sha256
+
+      - name: Upload build artifacts (dry run)
+        if: ${{ needs.get-version.outputs.dry_run == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
+
+      - name: Upload Release Assets
+        if: ${{ needs.get-version.outputs.dry_run != 'true' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.get-version.outputs.version }}
+          files: |
+            ${{ matrix.archive }}
+            ${{ matrix.archive }}.sha256
+
+  # ---------------------------------------------------------------------------
+  # Build Docker Images (native runners for each arch - much faster than QEMU)
+  # ---------------------------------------------------------------------------
+  build-docker:
+    name: Build Docker (${{ matrix.platform }})
+    needs: get-version
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        if: ${{ needs.get-version.outputs.dry_run != 'true' }}
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract platform name
+        id: platform
+        run: echo "name=$(echo '${{ matrix.platform }}' | tr '/' '-')" >> $GITHUB_OUTPUT
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=${{ needs.get-version.outputs.dry_run != 'true' }},name-canonical=true,push=${{ needs.get-version.outputs.dry_run != 'true' }}
+          cache-from: type=gha,scope=${{ steps.platform.outputs.name }}
+          cache-to: type=gha,mode=max,scope=${{ steps.platform.outputs.name }}
+
+      - name: Export digest
+        if: ${{ needs.get-version.outputs.dry_run != 'true' }}
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: ${{ needs.get-version.outputs.dry_run != 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ steps.platform.outputs.name }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Summary
+        run: |
+          echo "## Docker Build Summary (${{ matrix.platform }})" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ needs.get-version.outputs.dry_run }}" = "true" ]; then
+            echo " **Dry Run** - Image built but NOT pushed" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "[SUCCESS] **Built** \`${{ matrix.platform }}\` image" >> $GITHUB_STEP_SUMMARY
+          fi
+
+  # ---------------------------------------------------------------------------
+  # Merge Docker Manifests (combines amd64 + arm64 into multi-arch image)
+  # ---------------------------------------------------------------------------
+  merge-docker:
+    name: Merge Docker Manifests
+    needs: [get-version, build-docker]
+    if: ${{ needs.get-version.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=${{ needs.get-version.outputs.version }}
+            type=raw,value=latest,enable=${{ !contains(needs.get-version.outputs.version, '-') }}
+
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf 'ghcr.io/${{ github.repository }}@sha256:%s ' *)
+
+      - name: Inspect image
+        run: |
+          docker buildx imagetools inspect ghcr.io/${{ github.repository }}:${{ needs.get-version.outputs.version }}
+
+      - name: Summary
+        run: |
+          echo "## Multi-arch Docker Image Published" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "[SUCCESS] \`ghcr.io/${{ github.repository }}:${{ needs.get-version.outputs.version }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Platforms: linux/amd64, linux/arm64" >> $GITHUB_STEP_SUMMARY
+
+  # ---------------------------------------------------------------------------
+  # Generate and Upload SBOM
+  # ---------------------------------------------------------------------------
+  docker-sbom:
+    name: Generate SBOM
+    needs: [get-version, merge-docker]
+    if: ${{ needs.get-version.outputs.dry_run != 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: read
+
+    steps:
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: ghcr.io/${{ github.repository }}:${{ needs.get-version.outputs.version }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.get-version.outputs.version }}
+          files: sbom.spdx.json

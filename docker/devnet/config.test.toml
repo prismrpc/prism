@@ -1,0 +1,119 @@
+# Prism RPC Aggregator - Test Configuration for Devnet
+# This configuration is designed to work with docker/devnet/docker-compose.yml
+#
+# Usage:
+#   PRISM_CONFIG=docker/devnet/config.test.toml cargo run --bin server
+
+environment = "test"
+
+[server]
+bind_address = "127.0.0.1"
+bind_port = 3030
+max_concurrent_requests = 500
+request_timeout_seconds = 10
+
+# =============================================================================
+# UPSTREAM PROVIDERS - Local Geth PoA Devnet Nodes
+# All nodes sync from the same chain, ensuring consistent data.
+# =============================================================================
+
+[upstreams]
+
+# Sealer node (block producer) - highest weight, most reliable
+[[upstreams.providers]]
+name = "geth-sealer"
+chain_id = 1337
+https_url = "http://localhost:8545"
+wss_url = "ws://localhost:8546"
+weight = 3
+timeout_seconds = 5
+circuit_breaker_threshold = 3
+circuit_breaker_timeout_seconds = 5
+
+# RPC node 1 - standard weight
+[[upstreams.providers]]
+name = "geth-rpc-1"
+chain_id = 1337
+https_url = "http://localhost:8547"
+wss_url = "ws://localhost:8548"
+weight = 2
+timeout_seconds = 5
+circuit_breaker_threshold = 3
+circuit_breaker_timeout_seconds = 5
+
+# RPC node 2 - standard weight
+[[upstreams.providers]]
+name = "geth-rpc-2"
+chain_id = 1337
+https_url = "http://localhost:8549"
+wss_url = "ws://localhost:8550"
+weight = 2
+timeout_seconds = 5
+circuit_breaker_threshold = 3
+circuit_breaker_timeout_seconds = 5
+
+# RPC node 3 - standard weight
+[[upstreams.providers]]
+name = "geth-rpc-3"
+chain_id = 1337
+https_url = "http://localhost:8551"
+wss_url = "ws://localhost:8552"
+weight = 2
+timeout_seconds = 5
+circuit_breaker_threshold = 3
+circuit_breaker_timeout_seconds = 5
+
+# =============================================================================
+# CACHE CONFIGURATION - Optimized for testing
+# =============================================================================
+
+[cache]
+enabled = true
+cache_ttl_seconds = 60
+
+[cache.manager_config]
+retain_blocks = 100
+enable_auto_cleanup = true
+cleanup_interval_seconds = 30
+cleanup_every_n_blocks = 10
+
+[cache.manager_config.log_cache]
+chunk_size = 100
+max_exact_results = 1000
+max_bitmap_entries = 10000
+safety_depth = 6
+
+[cache.manager_config.block_cache]
+hot_window_size = 50
+max_headers = 1000
+max_bodies = 1000
+safety_depth = 6
+
+[cache.manager_config.transaction_cache]
+max_transactions = 5000
+max_receipts = 5000
+safety_depth = 6
+
+[cache.manager_config.reorg_manager]
+safety_depth = 12
+max_reorg_depth = 64
+reorg_detection_threshold = 2
+
+# =============================================================================
+# OTHER CONFIGURATION
+# =============================================================================
+
+[health_check]
+interval_seconds = 10
+
+[auth]
+enabled = false
+database_url = "sqlite://db/auth.db"
+
+[metrics]
+enabled = true
+prometheus_port = 9091
+
+[logging]
+level = "debug"
+format = "pretty"

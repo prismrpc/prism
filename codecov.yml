@@ -1,0 +1,13 @@
+coverage:
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 0.5%
+    patch: off
+
+comment:
+  layout: condensed_header, condensed_files, condensed_footer
+  behavior: default
+  require_head: true
+  require_base: false

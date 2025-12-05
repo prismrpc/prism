@@ -1,0 +1,38 @@
+[package]
+name = "tests"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Integration tests for Prism"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[features]
+e2e = []  # Feature flag for end-to-end tests requiring devnet
+
+[lib]
+name = "integration_tests"
+
+[dependencies]
+prism-core = { path = "../prism-core" }
+axum = { workspace = true }
+tower = { workspace = true }
+futures = { workspace = true }
+futures-util = { workspace = true }
+tokio = { workspace = true, features = ["full", "test-util"] }
+tokio-tungstenite = { workspace = true }
+serde_json = { workspace = true }
+serde = { workspace = true }
+reqwest = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+mockito = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+insta = { workspace = true }
+proptest = { workspace = true }
+serial_test = { workspace = true }

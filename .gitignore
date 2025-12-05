@@ -1,0 +1,9 @@
+/target
+.env
+.log
+*.html
+*.db
+.vscode
+/codeql-db-rust
+/coverage
+.cursor/

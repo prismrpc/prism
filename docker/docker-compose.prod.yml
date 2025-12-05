@@ -1,0 +1,147 @@
+# =============================================================================
+# Prism RPC Aggregator - Production Docker Compose
+# =============================================================================
+#
+# Usage:
+#   docker compose -f docker-compose.prod.yml up -d
+#   docker compose -f docker-compose.prod.yml logs -f prism
+#   docker compose -f docker-compose.prod.yml down
+#
+# With monitoring:
+#   docker compose -f docker-compose.prod.yml --profile monitoring up -d
+#
+
+services:
+  # ---------------------------------------------------------------------------
+  # Prism RPC Aggregator Server
+  # ---------------------------------------------------------------------------
+  prism:
+    image: ghcr.io/prismrpc/prism:0.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: prism-rpc
+    restart: unless-stopped
+
+    # Port mappings
+    ports:
+      - "3030:3030"  # RPC endpoint
+      - "9090:9090"  # Prometheus metrics
+
+    # Volume mounts
+    volumes:
+      # Configuration (read-only)
+      - ./config/config.toml:/app/config/config.toml:ro
+      # Database (persistent)
+      - prism-db:/app/db
+      # Logs (optional)
+      - prism-logs:/app/logs
+
+    # Environment variables
+    environment:
+      - PRISM_CONFIG=/app/config/config.toml
+      - RUST_LOG=${RUST_LOG:-info,prism_core=info,server=info}
+      - RUST_BACKTRACE=${RUST_BACKTRACE:-0}
+
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+
+    # Health check
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:3030/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+    # Networking
+    networks:
+      - prism-network
+
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+
+    # Logging
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "100m"
+        max-file: "10"
+
+  # ---------------------------------------------------------------------------
+  # Prometheus - Metrics Collection (optional, use --profile monitoring)
+  # ---------------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prism-prometheus
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    ports:
+      - "9091:9090"
+    volumes:
+      - ./deploy/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+    networks:
+      - prism-network
+    depends_on:
+      prism:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Grafana - Metrics Visualization (optional, use --profile monitoring)
+  # ---------------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: prism-grafana
+    profiles:
+      - monitoring
+    restart: unless-stopped
+    ports:
+      - "3001:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./deploy/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./deploy/grafana/dashboards:/var/lib/grafana/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_SERVER_ROOT_URL=${GRAFANA_ROOT_URL:-http://localhost:3001}
+    networks:
+      - prism-network
+    depends_on:
+      - prometheus
+
+# =============================================================================
+# Volumes
+# =============================================================================
+volumes:
+  prism-db:
+    driver: local
+  prism-logs:
+    driver: local
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+
+# =============================================================================
+# Networks
+# =============================================================================
+networks:
+  prism-network:
+    driver: bridge

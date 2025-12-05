@@ -1,0 +1,95 @@
+[package]
+name = "prism-core"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Core library for Prism"
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+
+[lib]
+name = "prism_core"
+path = "src/lib.rs"
+
+[features]
+default = ["verbose-logging"]
+verbose-logging = []
+enable-stats = []
+
+[lints.clippy]
+all = "warn"
+pedantic = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+await_holding_lock = "warn"
+
+[dependencies]
+arc-swap = { workspace = true }
+tokio = { workspace = true }
+async-trait = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+metrics = { workspace = true }
+metrics-exporter-prometheus = { workspace = true }
+moka = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+config = { workspace = true }
+chrono = { workspace = true }
+uuid = { workspace = true }
+once_cell = { workspace = true }
+parking_lot = { workspace = true }
+roaring = { workspace = true }
+dashmap = { workspace = true }
+lru = { workspace = true }
+hex = { workspace = true }
+md5 = { workspace = true }
+futures = { workspace = true }
+tokio-tungstenite = { workspace = true }
+rustls = { workspace = true }
+futures-util = { workspace = true }
+bytes = { workspace = true }
+winnow = { workspace = true }
+rayon = { workspace = true }
+rand = { workspace = true }
+sqlx = { workspace = true }
+sha2 = { workspace = true }
+argon2 = { workspace = true }
+ring = { workspace = true }
+ahash = { workspace = true }
+url = { workspace = true }
+toml = { workspace = true }
+smallvec = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+criterion = { workspace = true, features = ["html_reports"] }
+proptest = "1.4"
+
+[[bench]]
+name = "cache_benchmarks"
+harness = false
+
+[[bench]]
+name = "hex_benchmarks"
+harness = false
+
+[[bench]]
+name = "json_hash_benchmarks"
+harness = false
+
+[[bench]]
+name = "log_cache_benchmarks"
+harness = false
+
+[[bench]]
+name = "cache_manager_benchmarks"
+harness = false
+
+[[bench]]
+name = "consensus_engine_benchmarks"
+harness = false

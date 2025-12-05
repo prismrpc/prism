@@ -1,0 +1,201 @@
+# Prism RPC Aggregator - Private PoA Devnet Configuration
+# This Docker Compose file sets up a proper private Ethereum network using Geth
+# with Clique PoA consensus. All nodes sync from the same chain, ensuring
+# consistent data across all upstreams.
+#
+# Architecture:
+#   - geth-sealer: Block producer (PoA validator)
+#   - geth-rpc-1/2/3: RPC nodes that sync from sealer (upstreams for Prism)
+#
+# Usage:
+#   docker compose -f docker/devnet/docker-compose.yml up -d
+#   docker compose -f docker/devnet/docker-compose.yml down -v  # Clean reset
+#
+# Chain Configuration:
+#   - Chain ID: 1337
+#   - Block Time: 2 seconds
+#   - Consensus: Clique PoA
+#
+# Note: Using Geth v1.13.15 because v1.14+ dropped PoA support (PoS only)
+
+services:
+  # =============================================================================
+  # BLOCK PRODUCER (Sealer/Validator)
+  # =============================================================================
+  geth-sealer:
+    image: ethereum/client-go:v1.13.15
+    container_name: prism-geth-sealer
+    volumes:
+      - geth-sealer-data:/data
+      - ./genesis.json:/genesis.json:ro
+      - ./init-geth.sh:/init-geth.sh:ro
+      - sealer-enode:/sealer-enode
+    entrypoint: ["/bin/sh", "/init-geth.sh", "sealer"]
+    ports:
+      - "8545:8545"
+      - "8546:8546"
+      - "30303:30303"
+      - "30303:30303/udp"
+    networks:
+      prism-devnet:
+        ipv4_address: 172.28.0.10
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8545 --post-data='{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' --header='Content-Type: application/json' | grep -q result"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+
+  # =============================================================================
+  # RPC NODES (Sync from sealer)
+  # =============================================================================
+
+  # Primary RPC node - highest weight
+  geth-rpc-1:
+    image: ethereum/client-go:v1.13.15
+    container_name: prism-geth-rpc-1
+    volumes:
+      - geth-rpc-1-data:/data
+      - ./genesis.json:/genesis.json:ro
+      - ./init-geth.sh:/init-geth.sh:ro
+      - sealer-enode:/sealer-enode:ro
+    entrypoint: ["/bin/sh", "/init-geth.sh", "rpc"]
+    ports:
+      - "8547:8545"
+      - "8548:8546"
+    networks:
+      prism-devnet:
+        ipv4_address: 172.28.0.11
+    depends_on:
+      geth-sealer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8545 --post-data='{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' --header='Content-Type: application/json' | grep -q result"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Secondary RPC node
+  geth-rpc-2:
+    image: ethereum/client-go:v1.13.15
+    container_name: prism-geth-rpc-2
+    volumes:
+      - geth-rpc-2-data:/data
+      - ./genesis.json:/genesis.json:ro
+      - ./init-geth.sh:/init-geth.sh:ro
+      - sealer-enode:/sealer-enode:ro
+    entrypoint: ["/bin/sh", "/init-geth.sh", "rpc"]
+    ports:
+      - "8549:8545"
+      - "8550:8546"
+    networks:
+      prism-devnet:
+        ipv4_address: 172.28.0.12
+    depends_on:
+      geth-sealer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8545 --post-data='{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' --header='Content-Type: application/json' | grep -q result"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Tertiary RPC node
+  geth-rpc-3:
+    image: ethereum/client-go:v1.13.15
+    container_name: prism-geth-rpc-3
+    volumes:
+      - geth-rpc-3-data:/data
+      - ./genesis.json:/genesis.json:ro
+      - ./init-geth.sh:/init-geth.sh:ro
+      - sealer-enode:/sealer-enode:ro
+    entrypoint: ["/bin/sh", "/init-geth.sh", "rpc"]
+    ports:
+      - "8551:8545"
+      - "8552:8546"
+    networks:
+      prism-devnet:
+        ipv4_address: 172.28.0.13
+    depends_on:
+      geth-sealer:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8545 --post-data='{\"jsonrpc\":\"2.0\",\"method\":\"eth_blockNumber\",\"params\":[],\"id\":1}' --header='Content-Type: application/json' | grep -q result"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # =============================================================================
+  # TRANSACTION SPAMMER (Optional)
+  # Deploys ERC20 contract and sends random mix of ETH/ERC20 transfers
+  # =============================================================================
+  tx-spammer:
+    image: ghcr.io/foundry-rs/foundry:latest
+    container_name: prism-tx-spammer
+    volumes:
+      - ./tx-spammer.sh:/tx-spammer.sh:ro
+      - ./TestToken.sol:/contracts/TestToken.sol:ro
+      - ./foundry.toml:/contracts/foundry.toml:ro
+    entrypoint: ["/bin/bash", "/tx-spammer.sh"]
+    networks:
+      prism-devnet:
+        ipv4_address: 172.28.0.20
+    depends_on:
+      geth-sealer:
+        condition: service_healthy
+    restart: unless-stopped
+    environment:
+      - FOUNDRY_DISABLE_NIGHTLY_WARNING=1
+      - RPC_URL=http://geth-sealer:8545
+      - PRIVATE_KEY=0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+      - BLOCK_PERIOD=12
+      - MIN_TX_PER_BLOCK=1
+      - MAX_TX_PER_BLOCK=5
+
+volumes:
+  geth-sealer-data:
+  geth-rpc-1-data:
+  geth-rpc-2-data:
+  geth-rpc-3-data:
+  sealer-enode:
+
+networks:
+  prism-devnet:
+    name: prism-devnet
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1

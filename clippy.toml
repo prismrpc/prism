@@ -1,0 +1,8 @@
+msrv = "1.88"
+too-large-for-stack = 128
+avoid-breaking-exported-api = true
+too-many-arguments-threshold = 7
+type-complexity-threshold = 300
+allow-dbg-in-tests = true
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true

@@ -1,0 +1,770 @@
+# Prism RPC Aggregator - cargo-make Configuration
+# This file defines tasks and workflows for the RPC aggregator project
+# Usage: cargo make <task-name>
+
+[config]
+# Project configuration
+default_to_workspace = false
+reduce_output = false
+
+[env]
+# Project environment variables
+CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
+# Default log level for development
+RUST_LOG = "warn,prism_core=info,server=info,cli=info,tests=info"
+
+# =============================================================================
+# BASIC DEVELOPMENT TASKS
+# =============================================================================
+[tasks.format]
+description = "Format all code using rustfmt"
+command = "cargo"
+args = ["fmt", "--all"]
+
+[tasks.format-check]
+description = "Check if code is formatted without modifying"
+command = "cargo"
+args = ["fmt", "--all", "--", "--check"]
+
+[tasks.clean]
+description = "Clean all build artifacts"
+command = "cargo"
+args = ["clean"]
+
+# =============================================================================
+# LINTING TASKS
+# =============================================================================
+
+[tasks.clippy]
+description = "Run clippy on lib and bins"
+command = "cargo"
+args = ["clippy", "--lib", "--bins", "--all-features", "--", "-W", "clippy::pedantic", "-D", "warnings"]
+
+[tasks.clippy-tests]
+description = "Run clippy on tests"
+command = "cargo"
+args = ["clippy", "--lib", "--bins", "--tests", "--all-features", "--", "-W", "clippy::pedantic", "-D", "warnings"]
+
+[tasks.clippy-all]
+description = "Run clippy on everything including benchmarks"
+command = "cargo"
+args = ["clippy", "--all-targets", "--all-features", "--", "-W", "clippy::pedantic", "-D", "warnings"]
+
+[tasks.clippy-benches]
+description = "Run clippy on benchmarks only"
+command = "cargo"
+args = ["clippy", "--benches", "--all-features", "--", "-W", "clippy::pedantic", "-D", "warnings"]
+
+# =============================================================================
+# BUILD TASKS
+# =============================================================================
+
+[tasks.build]
+description = "Build the project in debug mode"
+command = "cargo"
+args = ["build", "--all-targets", "--all-features"]
+
+[tasks.build-release]
+description = "Build the project in release mode"
+command = "cargo"
+args = ["build", "--release", "--all-targets", "--all-features"]
+
+[tasks.check]
+description = "Fast check compilation without producing binaries"
+command = "cargo"
+args = ["check", "--all-targets", "--all-features"]
+
+# =============================================================================
+# TESTING TASKS (using cargo-nextest for better performance)
+# =============================================================================
+
+[tasks.test]
+description = "Run unit tests (excludes e2e tests which require devnet)"
+command = "cargo"
+args = ["nextest", "run", "--all-features", "-E", "not test(e2e::)"]
+
+[tasks.test-lib]
+description = "Run prism-core library tests only using nextest"
+command = "cargo"
+args = ["nextest", "run", "-p", "prism-core", "--all-features"]
+
+[tasks.test-performance]
+description = "Run performance correctness tests with output"
+command = "cargo"
+args = ["nextest", "run", "-p", "prism-core", "-E", "test(performance)", "--no-capture"]
+
+[tasks.test-verbose]
+description = "Run tests with verbose output using nextest"
+command = "cargo"
+args = ["nextest", "run", "--all-features", "--no-capture"]
+
+[tasks.test-core]
+description = "Run prism-core unit tests using nextest"
+command = "cargo"
+args = ["nextest", "run", "-p", "prism-core", "--no-capture"]
+
+[tasks.test-cargo]
+description = "Run tests with cargo test (fallback if nextest unavailable)"
+command = "cargo"
+args = ["test", "--all-features"]
+
+# =============================================================================
+# BENCHMARK TASKS (Criterion)
+# =============================================================================
+
+[tasks.bench]
+description = "Run all Criterion benchmarks"
+clear = true
+command = "cargo"
+args = ["bench", "-p", "prism-core"]
+
+[tasks.bench-cache]
+description = "Run cache performance benchmarks (Criterion)"
+command = "cargo"
+args = ["bench", "-p", "prism-core", "--bench", "cache_benchmarks"]
+
+[tasks.bench-hex]
+description = "Run hex formatting benchmarks (Criterion)"
+command = "cargo"
+args = ["bench", "-p", "prism-core", "--bench", "hex_benchmarks"]
+
+[tasks.bench-quick]
+description = "Run quick benchmarks (reduced iterations)"
+command = "cargo"
+args = ["bench", "-p", "prism-core", "--bench", "cache_benchmarks", "--bench", "hex_benchmarks", "--", "--quick"]
+
+[tasks.bench-save]
+description = "Run benchmarks and save baseline"
+command = "cargo"
+args = ["bench", "-p", "prism-core", "--bench", "cache_benchmarks", "--bench", "hex_benchmarks", "--", "--save-baseline", "main"]
+
+[tasks.bench-compare]
+description = "Compare against saved baseline"
+command = "cargo"
+args = ["bench", "-p", "prism-core", "--bench", "cache_benchmarks", "--bench", "hex_benchmarks", "--", "--baseline", "main"]
+
+# =============================================================================
+# SERVER AND CLI TASKS
+# =============================================================================
+
+[tasks.run-server]
+description = "Run server with production config (JSON logs)"
+command = "cargo"
+args = ["run", "--bin", "server"]
+
+[tasks.run-server-dev]
+description = "Run server with development config (pretty logs)"
+command = "cargo"
+args = ["run", "--bin", "server"]
+env = { "PRISM_CONFIG" = "config/development.toml" }
+
+[tasks.run-server-release]
+description = "Run server in release mode with production config"
+command = "cargo"
+args = ["run", "--release", "--bin", "server"]
+
+[tasks.run-cli]
+description = "Run the CLI tool (use -- to pass arguments)"
+command = "cargo"
+args = ["run", "--bin", "cli", "--"]
+
+# CLI subcommands for convenience
+[tasks.cli-config-validate]
+description = "Validate configuration using CLI"
+command = "cargo"
+args = ["run", "--bin", "cli", "--", "config", "validate"]
+
+[tasks.cli-config-show]
+description = "Show current configuration"
+command = "cargo"
+args = ["run", "--bin", "cli", "--", "config", "show"]
+
+[tasks.cli-config-generate]
+description = "Generate sample configuration"
+command = "cargo"
+args = ["run", "--bin", "cli", "--", "config", "generate", "--force"]
+
+[tasks.cli-test-upstreams]
+description = "Test configured upstream connections"
+command = "cargo"
+args = ["run", "--bin", "cli", "--", "config", "test-upstreams"]
+
+# =============================================================================
+# WORKFLOW TASKS
+# =============================================================================
+
+[tasks.quick-check]
+description = "Quick development check: format + clippy + test"
+dependencies = ["format", "clippy", "test"]
+
+[tasks.dev]
+description = "Full development workflow: format + clippy + test + build"
+dependencies = ["format", "clippy", "test", "build"]
+
+[tasks.validate]
+description = "Complete validation: format-check + clippy + all tests"
+dependencies = ["format-check", "clippy", "test", "test-performance"]
+
+[tasks.perf]
+description = "Run all performance tests and benchmarks"
+dependencies = ["test-performance", "test-core", "bench"]
+
+[tasks.pre-commit]
+description = "Pre-commit validation (what should pass before committing)"
+dependencies = ["format-check", "clippy", "test"]
+
+[tasks.ci]
+description = "Complete CI pipeline: clean + validate + build + performance"
+dependencies = ["clean", "format-check", "clippy-all", "test", "test-performance", "build-release"]
+
+# =============================================================================
+# UTILITY TASKS
+# =============================================================================
+
+[tasks.deps]
+description = "Show dependency tree"
+command = "cargo"
+args = ["tree"]
+
+[tasks.outdated]
+description = "Check for outdated dependencies"
+command = "cargo"
+args = ["outdated"]
+install_crate = "cargo-outdated"
+
+[tasks.audit]
+description = "Audit dependencies for security vulnerabilities"
+command = "cargo"
+args = ["audit"]
+install_crate = "cargo-audit"
+
+[tasks.bloat]
+description = "Analyze binary size and dependencies"
+command = "cargo"
+args = ["bloat", "--release"]
+install_crate = "cargo-bloat"
+
+[tasks.expand]
+description = "Show macro expansions (requires nightly)"
+command = "cargo"
+args = ["expand"]
+install_crate = "cargo-expand"
+
+# =============================================================================
+# DOCUMENTATION TASKS
+# =============================================================================
+
+[tasks.doc]
+description = "Generate documentation"
+command = "cargo"
+args = ["doc", "--all-features", "--no-deps"]
+
+[tasks.doc-open]
+description = "Generate and open documentation in browser"
+command = "cargo"
+args = ["doc", "--all-features", "--no-deps", "--open"]
+
+[tasks.docs-check]
+description = "Check documentation links using lychee"
+script = '''
+if ! command -v lychee &> /dev/null; then
+    echo "lychee is not installed. Install with:"
+    echo "  cargo install lychee"
+    echo ""
+    exit 1
+fi
+
+# Lychee reads configuration from .lychee.toml
+lychee --verbose '**/*.md'
+'''
+
+# =============================================================================
+# COVERAGE TASKS
+# =============================================================================
+
+[tasks.coverage-llvm]
+description = "Generate code coverage report using llvm-cov"
+env = { "RUSTFLAGS" = "-C instrument-coverage", "LLVM_PROFILE_FILE" = "coverage/cargo-test-%p-%m.profraw" }
+script = '''
+mkdir -p coverage
+cargo llvm-cov --no-default-features --features verbose-logging,enable-stats --no-report nextest
+cargo llvm-cov report --codecov --output-path coverage/codecov.json
+'''
+
+[tasks.coverage-llvm-file]
+description = "Generate code coverage report for a specific file (usage: cargo make coverage-llvm-file -- --include path/to/file.rs)"
+env = { "RUSTFLAGS" = "-C instrument-coverage", "LLVM_PROFILE_FILE" = "coverage/cargo-test-%p-%m.profraw" }
+script = '''
+mkdir -p coverage
+cargo llvm-cov --no-default-features --features verbose-logging,enable-stats --no-report nextest
+cargo llvm-cov report --codecov --output-path coverage/codecov.json "$@"
+'''
+
+# =============================================================================
+# MAINTENANCE TASKS
+# =============================================================================
+
+[tasks.update]
+description = "Update all dependencies"
+command = "cargo"
+args = ["update"]
+
+[tasks.fix]
+description = "Apply cargo fix suggestions"
+command = "cargo"
+args = ["fix", "--all-targets", "--all-features", "--allow-dirty"]
+
+# =============================================================================
+# DEFAULT TASK
+# =============================================================================
+
+[tasks.default]
+description = "Default task: run quick development check"
+alias = "quick-check"
+
+# =============================================================================
+# HELP TASK
+# =============================================================================
+
+# =============================================================================
+# DEVNET TASKS - Local Ethereum Dev Network
+# =============================================================================
+
+[tasks.devnet-start]
+description = "Start local Ethereum devnet (Anvil nodes)"
+script = '''
+./docker/devnet/devnet.sh start
+'''
+
+[tasks.devnet-stop]
+description = "Stop local Ethereum devnet"
+script = '''
+./docker/devnet/devnet.sh stop
+'''
+
+[tasks.devnet-restart]
+description = "Restart local Ethereum devnet"
+script = '''
+./docker/devnet/devnet.sh restart
+'''
+
+[tasks.devnet-status]
+description = "Show devnet node status"
+script = '''
+./docker/devnet/devnet.sh status
+'''
+
+[tasks.devnet-health]
+description = "Check health of all devnet nodes"
+script = '''
+./docker/devnet/devnet.sh health
+'''
+
+[tasks.devnet-reset]
+description = "Reset devnet (clean state)"
+script = '''
+./docker/devnet/devnet.sh reset
+'''
+
+[tasks.devnet-logs]
+description = "Show devnet logs (follow mode)"
+script = '''
+./docker/devnet/devnet.sh logs
+'''
+
+[tasks.devnet-mine]
+description = "Mine blocks on devnet (default: 1 block)"
+script = '''
+./docker/devnet/devnet.sh mine ${@}
+'''
+
+[tasks.devnet-fork]
+description = "Start devnet with mainnet fork"
+script = '''
+./docker/devnet/devnet.sh start fork
+'''
+
+[tasks.run-server-devnet]
+description = "Run server with devnet configuration"
+command = "cargo"
+args = ["run", "--bin", "server"]
+env = { "PRISM_CONFIG" = "docker/devnet/config.test.toml" }
+
+[tasks.run-server-devnet-debug]
+description = "Run server with devnet configuration"
+command = "cargo"
+args = ["run", "--bin", "server"]
+env = { "PRISM_CONFIG" = "docker/devnet/config.test.toml", "RUST_LOG" = "debug" }
+
+# =============================================================================
+# RUST E2E TESTS - Comprehensive Rust-based tests against devnet
+# =============================================================================
+
+# Main e2e-rust task runs non-failover tests first, then failover tests separately
+# This prevents Docker container manipulation from affecting other tests
+[tasks.e2e-rust]
+description = "Run all Rust E2E tests (requires devnet + server running)"
+dependencies = ["e2e-rust-no-failover", "e2e-rust-failover"]
+
+[tasks.e2e-rust-no-failover]
+description = "Run all E2E tests except failover (4 parallel threads)"
+command = "cargo"
+args = ["nextest", "run", "--package", "tests", "--features", "e2e", "-E", "test(e2e::) and not test(e2e::failover)", "--test-threads=4", "--no-fail-fast"]
+
+[tasks.e2e-rust-basic]
+description = "Run basic RPC E2E tests"
+command = "cargo"
+args = ["nextest", "run", "--package", "tests", "--features", "e2e", "-E", "test(e2e::basic_rpc_tests)", "--test-threads=4"]
+
+[tasks.e2e-rust-cache]
+description = "Run cache E2E tests"
+command = "cargo"
+args = ["nextest", "run", "--package", "tests", "--features", "e2e", "-E", "test(e2e::cache_tests)", "--test-threads=4"]
+
+[tasks.e2e-rust-batch]
+description = "Run batch request E2E tests"
+command = "cargo"
+args = ["nextest", "run", "--package", "tests", "--features", "e2e", "-E", "test(e2e::batch_tests)", "--test-threads=4"]
+
+[tasks.e2e-rust-failover]
+description = "Run failover E2E tests SERIALLY (manipulates Docker containers)"
+command = "cargo"
+args = ["nextest", "run", "--package", "tests", "--features", "e2e", "-E", "test(e2e::failover)", "--test-threads=1"]
+
+[tasks.e2e-rust-metrics]
+description = "Run metrics E2E tests"
+command = "cargo"
+args = ["nextest", "run", "--package", "tests", "--features", "e2e", "-E", "test(e2e::metrics_tests)", "--test-threads=4"]
+
+[tasks.e2e-rust-load]
+description = "Run load balancing E2E tests"
+command = "cargo"
+args = ["nextest", "run", "--package", "tests", "--features", "e2e", "-E", "test(e2e::load_balancing_tests)", "--test-threads=4"]
+
+[tasks.verify]
+description = "Run manual verification script against proxy"
+script = '''
+./docker/devnet/verify.sh
+'''
+
+[tasks.verify-verbose]
+description = "Run manual verification script with verbose output"
+env = { "VERBOSE" = "true" }
+script = '''
+./docker/devnet/verify.sh
+'''
+
+# =============================================================================
+# K6 LOAD TESTING TASKS
+# Based on erpc patterns - see k6/README.md for details
+# =============================================================================
+
+[tasks.k6-check]
+description = "Check if k6 is installed"
+script = '''
+if ! command -v k6 &> /dev/null; then
+    echo "k6 is not installed. Install with:"
+    echo "  brew install k6        # macOS"
+    echo "  sudo apt install k6    # Linux (after adding repo)"
+    echo "  choco install k6       # Windows"
+    echo ""
+    echo "See k6/README.md for detailed instructions"
+    exit 1
+fi
+echo "k6 $(k6 version) found"
+'''
+
+[tasks.k6-smoke]
+description = "Run k6 smoke test (quick validation)"
+dependencies = ["k6-check"]
+script = '''
+cd k6 && k6 run scenarios/smoke.js
+'''
+
+[tasks.k6-historical]
+description = "Run k6 historical load test (backfilling pattern)"
+dependencies = ["k6-check"]
+script = '''
+cd k6 && k6 run scenarios/historical-load.js
+'''
+
+[tasks.k6-tip]
+description = "Run k6 tip-of-chain test (real-time pattern)"
+dependencies = ["k6-check"]
+script = '''
+cd k6 && k6 run scenarios/tip-of-chain.js
+'''
+
+[tasks.k6-stress]
+description = "Run k6 stress test (find breaking points)"
+dependencies = ["k6-check"]
+script = '''
+cd k6 && k6 run scenarios/stress.js
+'''
+
+[tasks.k6-stress-extreme]
+description = "Run k6 extreme stress test (2000-5000 RPS - may overwhelm devnet)"
+dependencies = ["k6-check"]
+script = '''
+cd k6 && EXECUTOR=extreme k6 run scenarios/stress.js
+'''
+
+[tasks.k6-stress-ultra]
+description = "Run k6 extreme stress test (2000-5000 RPS - may overwhelm devnet)"
+dependencies = ["k6-check"]
+script = '''
+cd k6 && EXECUTOR=ultra k6 run scenarios/stress.js
+'''
+
+[tasks.k6-load]
+description = "Run k6 load tests (historical + tip-of-chain)"
+dependencies = ["k6-check"]
+script = '''
+echo "=== Running Historical Load Test ==="
+cd k6 && k6 run scenarios/historical-load.js
+
+echo ""
+echo "=== Running Tip-of-Chain Test ==="
+cd k6 && k6 run scenarios/tip-of-chain.js
+'''
+
+[tasks.k6-all]
+description = "Run all k6 test scenarios"
+dependencies = ["k6-smoke", "k6-historical", "k6-tip", "k6-stress"]
+
+[tasks.k6-with-devnet]
+description = "Start devnet, server, and run k6 smoke test"
+script = '''
+echo "Starting devnet..."
+./docker/devnet/devnet.sh start
+
+echo "Waiting for devnet to be healthy..."
+sleep 10
+./docker/devnet/devnet.sh health
+
+echo "Starting Prism server..."
+PRISM_CONFIG=docker/devnet/config.test.toml cargo run --release --bin server &
+SERVER_PID=$!
+
+echo "Waiting for server to start..."
+sleep 5
+
+# Check server is responding
+if curl -s -o /dev/null -w "%{http_code}" http://localhost:3030/healthz | grep -q "200"; then
+    echo "Server is healthy"
+else
+    echo "Server failed to start"
+    kill $SERVER_PID 2>/dev/null
+    ./docker/devnet/devnet.sh stop
+    exit 1
+fi
+
+echo "Running k6 smoke test..."
+cd k6 && k6 run scenarios/smoke.js
+K6_EXIT=$?
+
+echo "Stopping server..."
+kill $SERVER_PID 2>/dev/null
+
+echo ""
+echo "Devnet is still running. Use 'cargo make devnet-stop' to stop it."
+echo "Or run more tests with 'cargo make k6-historical', 'cargo make k6-tip', etc."
+
+exit $K6_EXIT
+'''
+
+[tasks.k6-ci]
+description = "Run k6 tests for CI (smoke only, fast)"
+dependencies = ["k6-check"]
+script = '''
+EXECUTOR=smoke cd k6 && k6 run scenarios/historical-load.js
+'''
+
+[tasks.k6-save-results]
+description = "Run k6 load test and save results to JSON"
+dependencies = ["k6-check"]
+script = '''
+TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+cd k6 && k6 run scenarios/historical-load.js \
+    --out json=results/historical-${TIMESTAMP}.json \
+    --summary-export=results/historical-${TIMESTAMP}-summary.json
+echo "Results saved to k6/results/historical-${TIMESTAMP}.json"
+'''
+
+# =============================================================================
+# DOCKER TASKS
+# =============================================================================
+
+[tasks.docker-build]
+description = "Build Docker image for production"
+script = '''
+echo "Building Prism Docker image..."
+docker build -t prism-rpc:local -t prism:$(git describe --tags --always 2>/dev/null || echo "dev") .
+echo ""
+echo "Build complete! Image: prism-rpc:local"
+docker images prism-rpc --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}"
+'''
+
+[tasks.docker-run]
+description = "Run Prism in a Docker container"
+script = '''
+docker run -it --rm \
+  --name prism-dev \
+  -p 3030:3030 \
+  -p 9090:9090 \
+  -v $(pwd)/config/config.toml:/app/config/config.toml:ro \
+  -v prism-db:/app/db \
+  -e RUST_LOG=info,prism_core=info,server=info \
+  prism-rpc:local
+'''
+
+[tasks.docker-up]
+description = "Start production stack with Docker Compose"
+command = "docker"
+args = ["compose", "-f", "docker-compose.prod.yml", "up", "-d"]
+
+[tasks.docker-up-monitoring]
+description = "Start production stack with monitoring (Prometheus + Grafana)"
+command = "docker"
+args = ["compose", "-f", "docker-compose.prod.yml", "--profile", "monitoring", "up", "-d"]
+
+[tasks.docker-down]
+description = "Stop Docker Compose stack"
+command = "docker"
+args = ["compose", "-f", "docker-compose.prod.yml", "--profile", "monitoring", "down"]
+
+[tasks.docker-logs]
+description = "Follow Docker container logs"
+command = "docker"
+args = ["compose", "-f", "docker-compose.prod.yml", "logs", "-f", "prism"]
+
+[tasks.docker-clean]
+description = "Remove Docker images and volumes"
+script = '''
+echo "Stopping containers..."
+docker compose -f docker-compose.prod.yml --profile monitoring down -v 2>/dev/null || true
+
+echo "Removing images..."
+docker images prism-rpc -q | xargs -r docker rmi 2>/dev/null || true
+
+echo "Cleanup complete!"
+'''
+
+[tasks.docker-shell]
+description = "Open a shell in the running Prism container"
+command = "docker"
+args = ["exec", "-it", "prism-rpc", "/bin/bash"]
+
+# =============================================================================
+# HELP TASK
+# =============================================================================
+
+[tasks.help]
+description = "Show available tasks and their descriptions"
+script = '''
+echo "Prism RPC Aggregator - Available Tasks"
+echo "======================================="
+echo ""
+echo "Development Workflow:"
+echo "  quick-check    - Format + clippy + test (fast)"
+echo "  dev            - Complete development workflow"
+echo "  validate       - Full validation including performance tests"
+echo "  pre-commit     - What should pass before committing"
+echo "  ci             - Complete CI pipeline"
+echo ""
+echo "Basic Tasks:"
+echo "  format         - Format code with rustfmt"
+echo "  clippy         - Run clippy (excludes benchmarks)"
+echo "  clippy-all     - Run clippy on everything"
+echo "  build          - Build in debug mode"
+echo "  build-release  - Build in release mode"
+echo "  clean          - Clean build artifacts"
+echo ""
+echo "Testing:"
+echo "  test           - Run all tests"
+echo "  test-performance - Run performance tests"
+echo ""
+echo "Benchmarks (Criterion):"
+echo "  bench          - Run all Criterion benchmarks"
+echo "  bench-cache    - Cache performance benchmarks"
+echo "  bench-hex      - Hex formatting benchmarks"
+echo "  bench-quick    - Quick benchmarks (fewer iterations)"
+echo "  bench-save     - Run and save baseline"
+echo "  bench-compare  - Compare against baseline"
+echo ""
+echo "Running the Server:"
+echo "  run-server         - Production config (JSON logs)"
+echo "  run-server-dev     - Development config (pretty logs)"
+echo "  run-server-release - Release mode with production config"
+echo "  run-server-devnet  - Devnet config (local geth nodes)"
+echo ""
+echo "CLI Tools:"
+echo "  run-cli        - Run CLI (use -- for args)"
+echo "  cli-config-validate - Validate config"
+echo "  cli-config-show     - Show current config"
+echo "  cli-test-upstreams  - Test upstream connections"
+echo ""
+echo "Devnet (Local Ethereum Nodes):"
+echo "  devnet-start   - Start local Geth PoA nodes"
+echo "  devnet-stop    - Stop devnet"
+echo "  devnet-restart - Restart devnet"
+echo "  devnet-status  - Show node status"
+echo "  devnet-health  - Check node health"
+echo "  devnet-reset   - Reset to clean state"
+echo "  devnet-logs    - Show devnet logs"
+echo "  devnet-mine    - Mine blocks"
+echo "  devnet-fork    - Start with mainnet fork"
+echo ""
+echo "E2E Testing (Rust - requires devnet + server):"
+echo "  e2e-rust       - Run all Rust E2E tests"
+echo "  e2e-rust-basic - Basic RPC tests only"
+echo "  e2e-rust-cache - Cache behavior tests"
+echo "  e2e-rust-batch - Batch request tests"
+echo "  e2e-rust-failover - Failover tests (Docker)"
+echo "  e2e-rust-metrics - Metrics tests"
+echo "  e2e-rust-load  - Load balancing tests"
+echo ""
+echo "Manual Verification:"
+echo "  verify         - Run verification script"
+echo "  verify-verbose - Verbose verification"
+echo ""
+echo "Documentation:"
+echo "  doc            - Generate docs"
+echo "  doc-open       - Generate and open docs"
+echo "  docs-check     - Check documentation links"
+echo "  check-api-docs - Check API changes vs docs"
+echo "  check-api-docs-staged - Check staged API changes"
+echo ""
+echo "Coverage:"
+echo "  coverage-llvm  - Generate code coverage report using llvm-cov"
+echo ""
+echo "K6 Load Testing:"
+echo "  k6-smoke       - Quick smoke test"
+echo "  k6-historical  - Historical/backfilling load test"
+echo "  k6-tip         - Tip-of-chain real-time test"
+echo "  k6-stress      - Stress test (find limits)"
+echo "  k6-stress-extreme - Extreme stress test (2000-5000 RPS)"
+echo "  k6-load        - Run historical + tip tests"
+echo "  k6-all         - Run all k6 scenarios"
+echo "  k6-with-devnet - Start devnet + server + run smoke"
+echo "  k6-ci          - CI smoke test"
+echo "  k6-save-results - Save results to JSON"
+echo ""
+echo "Analysis:"
+echo "  deps           - Show dependency tree"
+echo "  audit          - Security audit"
+echo "  bloat          - Analyze binary size"
+echo ""
+echo "Docker:"
+echo "  docker-build   - Build Docker image for production"
+echo "  docker-run     - Run Prism in a Docker container"
+echo "  docker-up      - Start production stack"
+echo "  docker-up-monitoring - Start with Prometheus + Grafana"
+echo "  docker-down    - Stop Docker Compose stack"
+echo "  docker-logs    - Follow container logs"
+echo "  docker-clean   - Remove images and volumes"
+echo "  docker-shell   - Open shell in running container"
+echo ""
+echo "Use: cargo make <task-name>"
+echo "For task details: cargo make --list-all-steps"
+'''

@@ -1,0 +1,623 @@
+#![feature(stmt_expr_attributes)]
+
+use anyhow::Result;
+use axum::{
+    middleware as axum_middleware,
+    routing::{get, post},
+    serve, Router,
+};
+use prism_core::{
+    auth::repository::SqliteRepository,
+    cache::{reorg_manager::ReorgManager, CacheManager},
+    chain::ChainState,
+    config::AppConfig,
+    metrics::MetricsCollector,
+    middleware::ApiKeyAuth,
+    proxy::ProxyEngine,
+    upstream::{health::HealthChecker, manager::UpstreamManager},
+};
+use rustls::crypto::{ring::default_provider, CryptoProvider};
+use server::{middleware, router};
+use std::{net::SocketAddr, sync::Arc};
+use tokio::{signal, sync::broadcast};
+use tower::limit::ConcurrencyLimitLayer;
+use tower_http::compression::CompressionLayer;
+use tracing::{debug, error, info};
+use tracing_subscriber::EnvFilter;
+
+/// Initializes the logging system based on the configuration.
+fn init_logging(config: &AppConfig) {
+    let filter = if let Ok(env_filter) = std::env::var("RUST_LOG") {
+        if env_filter == "debug" {
+            EnvFilter::new("warn,prism_core=debug,server=debug,cli=debug,tests=debug")
+        } else if env_filter == "trace" {
+            EnvFilter::new("warn,prism_core=trace,server=trace,cli=trace,tests=trace")
+        } else {
+            EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| {
+                EnvFilter::new("warn,prism_core=debug,server=debug,cli=debug,tests=debug")
+            })
+        }
+    } else {
+        EnvFilter::new("warn,prism_core=info,server=info,cli=info,tests=info")
+    };
+
+    match config.logging.format.as_str() {
+        "json" => tracing_subscriber::fmt().with_env_filter(filter).json().init(),
+        // "pretty" and any other format default to pretty logging
+        _ => tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .pretty()
+            .with_file(true)
+            .with_line_number(true)
+            .with_target(false)
+            .init(),
+    }
+}
+
+/// Container for initialized core services.
+struct CoreServices {
+    cache_manager: Arc<CacheManager>,
+    upstream_manager: Arc<UpstreamManager>,
+    reorg_manager: Arc<ReorgManager>,
+    proxy_engine: Arc<ProxyEngine>,
+    health_checker: Arc<HealthChecker>,
+}
+
+/// Initializes all core services (cache, upstream, reorg managers, proxy engine).
+fn init_core_services(
+    config: &AppConfig,
+    shutdown_tx: &broadcast::Sender<()>,
+) -> Result<CoreServices> {
+    let metrics_collector = Arc::new(
+        MetricsCollector::new()
+            .map_err(|e| anyhow::anyhow!("Failed to initialize metrics: {e}"))?,
+    );
+    let chain_state = Arc::new(ChainState::new());
+
+    let cache_manager = Arc::new(
+        CacheManager::new(&config.cache.manager_config, chain_state.clone())
+            .map_err(|e| anyhow::anyhow!("Cache manager initialization failed: {e}"))?,
+    );
+    cache_manager.start_all_background_tasks(shutdown_tx);
+
+    let reorg_manager = Arc::new(ReorgManager::new(
+        config.cache.manager_config.reorg_manager.clone(),
+        chain_state.clone(),
+        cache_manager.clone(),
+    ));
+
+    let upstream_manager = Arc::new(
+        prism_core::upstream::UpstreamManagerBuilder::new()
+            .chain_state(chain_state)
+            .concurrency_limit(config.server.max_concurrent_requests)
+            .build()
+            .map_err(|e| anyhow::anyhow!("Upstream manager initialization failed: {e}"))?,
+    );
+
+    for upstream_config in config.to_legacy_upstreams() {
+        upstream_manager.add_upstream(upstream_config);
+    }
+    info!(endpoints_count = config.upstreams.providers.len(), "Upstream manager initialized");
+
+    let health_checker = Arc::new(
+        HealthChecker::new(
+            upstream_manager.clone(),
+            metrics_collector.clone(),
+            config.health_check_interval(),
+        )
+        .with_reorg_manager(reorg_manager.clone()),
+    );
+
+    let proxy_engine = Arc::new(ProxyEngine::new(
+        cache_manager.clone(),
+        upstream_manager.clone(),
+        metrics_collector.clone(),
+    ));
+
+    Ok(CoreServices {
+        cache_manager,
+        upstream_manager,
+        reorg_manager,
+        proxy_engine,
+        health_checker,
+    })
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    CryptoProvider::install_default(default_provider())
+        .map_err(|e| anyhow::anyhow!("Failed to install crypto provider: {e:?}"))?;
+
+    let config =
+        AppConfig::load().map_err(|e| anyhow::anyhow!("Configuration validation failed: {e}"))?;
+
+    let (shutdown_tx, _) = broadcast::channel::<()>(1);
+
+    init_logging(&config);
+    info!("Starting RPC Aggregator");
+    debug!(
+        upstreams_count = config.upstreams.providers.len(),
+        auth_enabled = config.auth.enabled,
+        bind_port = config.server.bind_port,
+        "Configuration loaded"
+    );
+
+    let services = init_core_services(&config, &shutdown_tx)?;
+    let health_handle = services.health_checker.start_with_shutdown(shutdown_tx.subscribe());
+
+    let websocket_shutdown_rx = shutdown_tx.subscribe();
+    let cache_manager = services.cache_manager.clone();
+    let upstream_manager = services.upstream_manager.clone();
+    let reorg_manager = services.reorg_manager.clone();
+    let _websocket_handle = tokio::spawn(async move {
+        subscribe_to_all_upstreams(
+            cache_manager,
+            upstream_manager,
+            reorg_manager,
+            websocket_shutdown_rx,
+        )
+        .await;
+    });
+
+    let app = create_app_with_security(services.proxy_engine, &config).await?;
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.server.bind_port));
+    info!(address = %addr, "Server listening");
+
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let server = serve(listener, app.into_make_service_with_connect_info::<SocketAddr>());
+
+    if let Err(e) = server.with_graceful_shutdown(shutdown_signal()).await {
+        error!(error = %e, "Server error occurred");
+    }
+
+    let _ = shutdown_tx.send(());
+    health_handle.abort();
+    info!("Server shutdown complete");
+
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = signal::ctrl_c().await {
+            error!(
+                error = %e,
+                "Failed to install Ctrl+C handler"
+            );
+        }
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        match signal::unix::signal(signal::unix::SignalKind::terminate()) {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            Err(e) => {
+                error!(
+                    error = %e,
+                    "Failed to install signal handler"
+                );
+
+                () = std::future::pending::<()>().await;
+            }
+        }
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        () = ctrl_c => {},
+        () = terminate => {},
+    }
+
+    info!("Shutdown signal received");
+}
+
+async fn create_app_with_security(
+    proxy_engine: Arc<ProxyEngine>,
+    config: &AppConfig,
+) -> Result<Router> {
+    let public = Router::new()
+        .route("/health", get(router::handle_health))
+        .route("/metrics", get(router::handle_metrics))
+        .with_state(proxy_engine.clone());
+
+    let mut rpc = Router::new()
+        .route("/", post(router::handle_rpc))
+        .with_state(proxy_engine.clone());
+
+    if config.auth.enabled {
+        let repo = SqliteRepository::new(&config.auth.database_url)
+            .await
+            .map_err(|e| anyhow::anyhow!("Auth repo init failed: {e}"))?;
+
+        let repo = Arc::new(repo);
+        let api_auth = Arc::new(ApiKeyAuth::new(repo));
+        rpc = rpc
+            .layer(axum_middleware::from_fn_with_state(api_auth, middleware::api_key_middleware));
+    }
+
+    rpc = rpc.layer(ConcurrencyLimitLayer::new(config.server.max_concurrent_requests));
+
+    rpc = rpc.layer(CompressionLayer::new());
+
+    let app = public.merge(rpc);
+    Ok(app)
+}
+
+async fn subscribe_to_all_upstreams(
+    cache_manager: Arc<CacheManager>,
+    upstream_manager: Arc<UpstreamManager>,
+    reorg_manager: Arc<ReorgManager>,
+    mut shutdown_rx: broadcast::Receiver<()>,
+) {
+    debug!("Starting chain tip subscription for all upstreams");
+
+    let upstreams = upstream_manager.get_all_upstreams();
+
+    let websocket_upstreams: Vec<_> = upstreams
+        .iter()
+        .filter(|upstream| {
+            upstream.config().supports_websocket && upstream.config().ws_url.is_some()
+        })
+        .cloned()
+        .collect();
+
+    debug!(
+        websocket_upstreams_count = websocket_upstreams.len(),
+        "Found upstreams with WebSocket support"
+    );
+
+    let mut subscription_handles = Vec::new();
+
+    for upstream in websocket_upstreams {
+        let upstream_name = upstream.config().name.clone();
+        let cache_manager_clone = cache_manager.clone();
+        let reorg_manager_clone = reorg_manager.clone();
+
+        let mut task_shutdown_rx = shutdown_rx.resubscribe();
+        let handle = tokio::spawn(async move {
+            const MAX_RECONNECT_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
+            let mut reconnect_delay = std::time::Duration::from_secs(1);
+
+            loop {
+                tokio::select! {
+                    _ = task_shutdown_rx.recv() => {
+                        info!(
+                            upstream_name = %upstream_name,
+                            "WebSocket subscription received shutdown signal"
+                        );
+                        break;
+                    }
+                    () = async {
+                        debug!(
+                            upstream_name = %upstream_name,
+                            "Starting WebSocket subscription (with reconnection)"
+                        );
+
+                        if !upstream.should_attempt_websocket_subscription().await {
+                            debug!(
+                                upstream_name = %upstream_name,
+                                "Skipping WebSocket subscription due to failure tracker"
+                            );
+                            tokio::time::sleep(reconnect_delay).await;
+                            return;
+                        }
+
+                        match upstream.subscribe_to_new_heads(cache_manager_clone.clone(), reorg_manager_clone.clone()).await {
+                            Ok(()) => {
+                                info!(
+                                    upstream_name = %upstream_name,
+                                    "WebSocket subscription completed normally"
+                                );
+                                reconnect_delay = std::time::Duration::from_secs(1);
+                            }
+                            Err(e) => {
+                                error!(
+                                    upstream_name = %upstream_name,
+                                    error = %e,
+                                    reconnect_delay_secs = reconnect_delay.as_secs(),
+                                    "WebSocket subscription failed, will retry"
+                                );
+
+                                upstream.record_websocket_failure().await;
+
+                                tokio::time::sleep(reconnect_delay).await;
+                                reconnect_delay = std::cmp::min(reconnect_delay * 2, MAX_RECONNECT_DELAY);
+                            }
+                        }
+
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    } => {}
+                }
+            }
+        });
+
+        subscription_handles.push(handle);
+    }
+
+    tokio::select! {
+        _ = shutdown_rx.recv() => {
+            info!("WebSocket subscription manager received shutdown signal");
+        }
+        () = async {
+            for handle in subscription_handles {
+                if let Err(e) = handle.await {
+                    error!(
+                        error = %e,
+                        "WebSocket subscription task unexpectedly terminated"
+                    );
+                }
+            }
+        } => {}
+    }
+
+    info!("WebSocket subscription manager shutting down");
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use prism_core::{
+        cache::CacheManagerConfig,
+        config::{AuthConfig, ServerConfig, UpstreamsConfig},
+        metrics::MetricsCollector,
+    };
+    use tower::ServiceExt;
+
+    fn create_test_config_no_auth() -> AppConfig {
+        AppConfig {
+            environment: "test".to_string(),
+            server: ServerConfig {
+                bind_address: "127.0.0.1".to_string(),
+                bind_port: 3030,
+                max_concurrent_requests: 100,
+                request_timeout_seconds: 30,
+            },
+            upstreams: UpstreamsConfig::default(),
+            cache: prism_core::config::CacheConfig {
+                enabled: true,
+                cache_ttl_seconds: 300,
+                manager_config: CacheManagerConfig::default(),
+            },
+            health_check: prism_core::config::HealthCheckConfig { interval_seconds: 60 },
+            auth: AuthConfig { enabled: false, database_url: "sqlite::memory:".to_string() },
+            metrics: prism_core::config::MetricsConfig {
+                enabled: true,
+                prometheus_port: Some(9090),
+            },
+            logging: prism_core::config::LoggingConfig {
+                level: "info".to_string(),
+                format: "pretty".to_string(),
+            },
+            hedging: prism_core::upstream::HedgeConfig::default(),
+            scoring: prism_core::upstream::ScoringConfig::default(),
+            consensus: prism_core::upstream::ConsensusConfig::default(),
+        }
+    }
+
+    fn create_test_config_with_auth() -> AppConfig {
+        let mut config = create_test_config_no_auth();
+        config.auth.enabled = true;
+        config.auth.database_url = "sqlite::memory:".to_string();
+        config
+    }
+
+    fn create_test_proxy_engine() -> Arc<ProxyEngine> {
+        let chain_state = Arc::new(ChainState::new());
+        let cache_manager = Arc::new(
+            CacheManager::new(&CacheManagerConfig::default(), chain_state.clone())
+                .expect("valid test cache config"),
+        );
+        let upstream_manager = Arc::new(
+            prism_core::upstream::UpstreamManagerBuilder::new()
+                .chain_state(chain_state)
+                .concurrency_limit(100)
+                .build()
+                .expect("valid test upstream config"),
+        );
+        let metrics_collector =
+            Arc::new(MetricsCollector::new().expect("valid test metrics config"));
+
+        Arc::new(ProxyEngine::new(cache_manager, upstream_manager, metrics_collector))
+    }
+
+    #[tokio::test]
+    async fn test_create_app_without_auth() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_no_auth();
+
+        let result = create_app_with_security(proxy_engine, &config).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_create_app_with_auth() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_with_auth();
+
+        let result = create_app_with_security(proxy_engine, &config).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_public_health_route_registered() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_no_auth();
+
+        let app = create_app_with_security(proxy_engine, &config)
+            .await
+            .expect("Failed to create app");
+
+        let request = Request::builder().uri("/health").method("GET").body(Body::empty()).unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert!(
+            response.status() == StatusCode::OK ||
+                response.status() == StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn test_public_metrics_route_registered() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_no_auth();
+
+        let app = create_app_with_security(proxy_engine, &config)
+            .await
+            .expect("Failed to create app");
+
+        let request = Request::builder().uri("/metrics").method("GET").body(Body::empty()).unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_rpc_route_registered() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_no_auth();
+
+        let app = create_app_with_security(proxy_engine, &config)
+            .await
+            .expect("Failed to create app");
+
+        let request = Request::builder()
+            .uri("/")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from("{}"))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_batch_rpc_route_registered() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_no_auth();
+
+        let app = create_app_with_security(proxy_engine, &config)
+            .await
+            .expect("Failed to create app");
+
+        // Batch requests are handled through the same "/" endpoint by detecting arrays
+        let request = Request::builder()
+            .uri("/")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from("[]"))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Should return OK (200) for empty batch, not NOT_FOUND (404)
+        assert_ne!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_concurrency_limit_applied() {
+        let proxy_engine = create_test_proxy_engine();
+        let mut config = create_test_config_no_auth();
+        config.server.max_concurrent_requests = 50;
+
+        let result = create_app_with_security(proxy_engine, &config).await;
+
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_compression_layer_applied() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_no_auth();
+
+        let app = create_app_with_security(proxy_engine, &config)
+            .await
+            .expect("Failed to create app");
+
+        let request = Request::builder()
+            .uri("/health")
+            .method("GET")
+            .header("accept-encoding", "gzip")
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert!(
+            response.status() == StatusCode::OK ||
+                response.status() == StatusCode::SERVICE_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auth_middleware_not_applied_to_public_routes() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_with_auth();
+
+        let app = create_app_with_security(proxy_engine, &config)
+            .await
+            .expect("Failed to create app");
+
+        let health_request =
+            Request::builder().uri("/health").method("GET").body(Body::empty()).unwrap();
+
+        let health_response = app.clone().oneshot(health_request).await.unwrap();
+        assert!(health_response.status() != StatusCode::UNAUTHORIZED);
+
+        let metrics_request =
+            Request::builder().uri("/metrics").method("GET").body(Body::empty()).unwrap();
+
+        let metrics_response = app.oneshot(metrics_request).await.unwrap();
+        assert_eq!(metrics_response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_rpc_endpoint_requires_auth_when_enabled() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_with_auth();
+
+        let app = create_app_with_security(proxy_engine, &config)
+            .await
+            .expect("Failed to create app");
+
+        let request = Request::builder()
+            .uri("/")
+            .method("POST")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}"#))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn test_different_concurrency_limits() {
+        let test_cases = vec![10, 50, 100, 200, 500];
+
+        for max_concurrent in test_cases {
+            let proxy_engine = create_test_proxy_engine();
+            let mut config = create_test_config_no_auth();
+            config.server.max_concurrent_requests = max_concurrent;
+
+            let result = create_app_with_security(proxy_engine, &config).await;
+
+            assert!(result.is_ok());
+        }
+    }
+}

@@ -1,0 +1,72 @@
+# =============================================================================
+# Prism RPC Aggregator - Docker Build Ignore
+# =============================================================================
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Rust build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# IDE and editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# CI/CD (not needed in build context)
+.github/
+
+# Docker files (avoid recursion)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
+
+# Testing infrastructure
+k6/
+scripts/
+tests/results/
+codeql-db-rust/
+coverage/
+
+# Database files (use volumes instead)
+db/*.db
+db/*.db-shm
+db/*.db-wal
+*.db
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+
+# Environment files (secrets should not be in image)
+.env
+.env.*
+
+# Documentation (not needed for runtime)
+docs/
+*.md
+!README.md
+
+# Monitoring configs (mount separately)
+prometheus.yml
+monitoring/
+grafana/
+
+# Development configs (use docker.toml)
+config/development.toml
+docker/devnet/
+
+# Benchmarks and test data
+benches/
+criterion/
