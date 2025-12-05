@@ -619,7 +619,7 @@ checksum = "b94f61472cee1439c0b966b47e3aca9ae07e45d070759512cd390ea2bebc6675"
 
 [[package]]
 name = "cli"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "chrono",
  "clap",
@@ -2403,7 +2403,7 @@ dependencies = [
 
 [[package]]
 name = "prism-core"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "ahash",
  "anyhow",
@@ -3131,7 +3131,7 @@ dependencies = [
 
 [[package]]
 name = "server"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3548,7 +3548,7 @@ dependencies = [
 
 [[package]]
 name = "tests"
-version = "0.1.0-alpha.1"
+version = "0.1.0-alpha.2"
 dependencies = [
  "async-trait",
  "axum",
