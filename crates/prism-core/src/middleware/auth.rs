@@ -220,6 +220,14 @@ mod tests {
         ) -> Result<(), AuthError> {
             Ok(())
         }
+
+        async fn get_usage_stats(
+            &self,
+            _api_key_id: i64,
+            _days: i64,
+        ) -> Result<Vec<crate::auth::repository::UsageStats>, AuthError> {
+            Ok(Vec::new())
+        }
     }
 
     fn create_test_api_key(id: i64, name: &str) -> ApiKey {

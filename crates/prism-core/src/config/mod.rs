@@ -184,6 +184,74 @@ pub struct LoggingConfig {
     pub format: String,
 }
 
+/// Admin API server configuration.
+///
+/// The admin API runs on a separate HTTP server (different port) in the same process,
+/// allowing monitoring and management of the Prism RPC server without affecting RPC traffic.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminConfig {
+    /// Whether the admin API is enabled. Defaults to `false`.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// IP address to bind the admin server to. Defaults to `127.0.0.1` (localhost only).
+    #[serde(default = "default_admin_bind_address")]
+    pub bind_address: String,
+
+    /// Port number for the admin server. Defaults to `3031`.
+    #[serde(default = "default_admin_port")]
+    pub port: u16,
+
+    /// Instance name for identification in multi-instance deployments.
+    #[serde(default = "default_instance_name")]
+    pub instance_name: String,
+
+    /// Optional Prometheus server URL for querying historical metrics.
+    /// If not set, metrics endpoints will return empty data.
+    /// Example: `http://localhost:9090`
+    #[serde(default)]
+    pub prometheus_url: Option<String>,
+
+    /// Optional admin authentication token.
+    /// If `None`, the admin API does not require authentication (development mode).
+    /// If `Some(token)`, all admin API requests must include the `X-Admin-Token` header
+    /// with a matching token value.
+    #[serde(default)]
+    pub admin_token: Option<String>,
+
+    /// Maximum tokens per bucket for rate limiting (burst capacity).
+    /// If `None`, rate limiting is disabled. Defaults to `Some(100)`.
+    #[serde(default = "default_rate_limit_max_tokens")]
+    pub rate_limit_max_tokens: Option<u32>,
+
+    /// Tokens refilled per second for rate limiting (sustained rate).
+    /// Only used if `rate_limit_max_tokens` is set. Defaults to `Some(10)`.
+    #[serde(default = "default_rate_limit_refill_rate")]
+    pub rate_limit_refill_rate: Option<u32>,
+}
+
+fn default_admin_bind_address() -> String {
+    "127.0.0.1".to_string()
+}
+
+fn default_admin_port() -> u16 {
+    3031
+}
+
+fn default_instance_name() -> String {
+    hostname::get().map_or_else(|_| "prism".to_string(), |h| h.to_string_lossy().into_owned())
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn default_rate_limit_max_tokens() -> Option<u32> {
+    Some(100)
+}
+
+#[allow(clippy::unnecessary_wraps)]
+fn default_rate_limit_refill_rate() -> Option<u32> {
+    Some(10)
+}
+
 /// Caching system configuration.
 ///
 /// Includes basic TTL settings and advanced caching options via [`CacheManagerConfig`].
@@ -254,6 +322,10 @@ pub struct AppConfig {
     /// Logging configuration.
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    /// Admin API configuration.
+    #[serde(default)]
+    pub admin: AdminConfig,
 
     /// Request hedging configuration for improving tail latency.
     #[serde(default)]
@@ -341,6 +413,21 @@ impl Default for LoggingConfig {
     }
 }
 
+impl Default for AdminConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            bind_address: default_admin_bind_address(),
+            port: default_admin_port(),
+            instance_name: default_instance_name(),
+            prometheus_url: None,
+            admin_token: None,
+            rate_limit_max_tokens: default_rate_limit_max_tokens(),
+            rate_limit_refill_rate: default_rate_limit_refill_rate(),
+        }
+    }
+}
+
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
@@ -362,6 +449,7 @@ impl Default for AppConfig {
             auth: AuthConfig::default(),
             metrics: MetricsConfig::default(),
             logging: LoggingConfig::default(),
+            admin: AdminConfig::default(),
             hedging: HedgeConfig::default(),
             scoring: ScoringConfig::default(),
             consensus: ConsensusConfig::default(),

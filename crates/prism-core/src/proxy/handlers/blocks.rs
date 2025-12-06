@@ -69,6 +69,7 @@ impl BlocksHandler {
                 error: None,
                 id: request.id,
                 cache_status: Some(CacheStatus::Full),
+                serving_upstream: None,
             });
         }
 
@@ -127,6 +128,7 @@ impl BlocksHandler {
                 error: None,
                 id: request.id,
                 cache_status: Some(CacheStatus::Full),
+                serving_upstream: None,
             });
         }
 

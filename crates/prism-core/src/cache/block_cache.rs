@@ -50,6 +50,11 @@ pub struct BlockCache {
 
     stats: Arc<RwLock<CacheStats>>,
     stats_dirty: std::sync::atomic::AtomicBool,
+
+    /// Atomic hit counter for lock-free metrics
+    hits: std::sync::atomic::AtomicU64,
+    /// Atomic miss counter for lock-free metrics
+    misses: std::sync::atomic::AtomicU64,
 }
 
 /// Circular buffer for recent blocks with O(1) insert/lookup.
@@ -250,6 +255,8 @@ impl BlockCache {
             hot_window: Arc::new(RwLock::new(HotWindow::new(config.hot_window_size))),
             stats: Arc::new(RwLock::new(CacheStats::default())),
             stats_dirty: std::sync::atomic::AtomicBool::new(false),
+            hits: std::sync::atomic::AtomicU64::new(0),
+            misses: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -444,9 +451,16 @@ impl BlockCache {
         &self,
         block_number: u64,
     ) -> Option<(Arc<BlockHeader>, Arc<BlockBody>)> {
-        let header = self.get_header_by_number(block_number)?;
-        let body = self.get_body_by_hash(&header.hash)?;
-        Some((header, body))
+        let header = self.get_header_by_number(block_number);
+        let body = header.as_ref().and_then(|h| self.get_body_by_hash(&h.hash));
+
+        if let (Some(h), Some(b)) = (header, body) {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some((h, b))
+        } else {
+            self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
     }
 
     #[must_use]
@@ -454,9 +468,16 @@ impl BlockCache {
         &self,
         block_hash: &[u8; 32],
     ) -> Option<(Arc<BlockHeader>, Arc<BlockBody>)> {
-        let header = self.get_header_by_hash(block_hash)?;
-        let body = self.get_body_by_hash(block_hash)?;
-        Some((header, body))
+        let header = self.get_header_by_hash(block_hash);
+        let body = header.as_ref().and_then(|_| self.get_body_by_hash(block_hash));
+
+        if let (Some(h), Some(b)) = (header, body) {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some((h, b))
+        } else {
+            self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
     }
 
     fn is_in_hot_window(&self, block_number: u64) -> bool {
@@ -566,6 +587,20 @@ impl BlockCache {
         stats.header_cache_size = header_cache_size;
         stats.body_cache_size = body_cache_size;
         stats.hot_window_size = hot_window_size;
+        stats.block_cache_hits = self.hits.load(std::sync::atomic::Ordering::Relaxed);
+        stats.block_cache_misses = self.misses.load(std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the current hit count for this cache.
+    #[must_use]
+    pub fn hit_count(&self) -> u64 {
+        self.hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Returns the current miss count for this cache.
+    #[must_use]
+    pub fn miss_count(&self) -> u64 {
+        self.misses.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Removes blocks older than the safe head minus retention period.
@@ -1294,5 +1329,58 @@ mod tests {
         // Body should exist in DashMap but not in hot window
         let body = cache.get_body_by_hash(&[99u8; 32]);
         assert!(body.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_hit_miss_tracking_accuracy() {
+        let config = BlockCacheConfig::default();
+        let cache = BlockCache::new(&config).expect("valid config");
+
+        // Initial state
+        assert_eq!(cache.hit_count(), 0);
+        assert_eq!(cache.miss_count(), 0);
+
+        // Insert a complete block
+        let header = create_test_header(1000, 1);
+        let body = create_test_body(1, 2);
+        cache.insert_header(header).await;
+        cache.insert_body(body).await;
+
+        // Hit: both header and body exist
+        let result = cache.get_block_by_number(1000);
+        assert!(result.is_some());
+        assert_eq!(cache.hit_count(), 1);
+        assert_eq!(cache.miss_count(), 0);
+
+        // Miss: header exists but body is missing (orphaned header)
+        let header_only = create_test_header(2000, 2);
+        cache.insert_header(header_only).await;
+        let result = cache.get_block_by_number(2000);
+        assert!(result.is_none());
+        assert_eq!(cache.hit_count(), 1);
+        assert_eq!(cache.miss_count(), 1);
+
+        // Miss: header doesn't exist at all
+        let result = cache.get_block_by_number(3000);
+        assert!(result.is_none());
+        assert_eq!(cache.hit_count(), 1);
+        assert_eq!(cache.miss_count(), 2);
+
+        // Another hit on the original block
+        let result = cache.get_block_by_hash(&[1u8; 32]);
+        assert!(result.is_some());
+        assert_eq!(cache.hit_count(), 2);
+        assert_eq!(cache.miss_count(), 2);
+
+        // Miss: header exists but body missing (by hash)
+        let result = cache.get_block_by_hash(&[2u8; 32]);
+        assert!(result.is_none());
+        assert_eq!(cache.hit_count(), 2);
+        assert_eq!(cache.miss_count(), 3);
+
+        // Verify stats are updated correctly
+        let stats = cache.get_stats().await;
+        assert_eq!(stats.block_cache_hits, 2);
+        assert_eq!(stats.block_cache_misses, 3);
     }
 }

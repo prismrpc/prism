@@ -64,6 +64,7 @@ pub mod load_balancer;
 pub mod manager;
 pub mod misbehavior;
 pub mod router;
+pub mod runtime_registry;
 pub mod scoring;
 pub mod websocket;
 
@@ -79,8 +80,14 @@ pub use hedging::{HedgeConfig, HedgeExecutor};
 pub use http_client::{HttpClient, HttpClientConfig};
 pub use latency_tracker::LatencyTracker;
 pub use load_balancer::{LoadBalancer, LoadBalancerConfig, LoadBalancerStats};
-pub use manager::{UnhealthyBehaviorConfig, UpstreamManager, UpstreamManagerConfig};
+pub use manager::{
+    CreateUpstreamRequest, UnhealthyBehaviorConfig, UpdateUpstreamRequest, UpstreamManager,
+    UpstreamManagerConfig,
+};
 pub use misbehavior::{MisbehaviorConfig, MisbehaviorStats, MisbehaviorTracker};
 pub use router::{RoutingContext, SmartRouter};
+pub use runtime_registry::{
+    RuntimeUpstreamConfig, RuntimeUpstreamRegistry, RuntimeUpstreamUpdate, UpstreamSource,
+};
 pub use scoring::{ScoringConfig, ScoringEngine, ScoringWeights, UpstreamMetrics, UpstreamScore};
 pub use websocket::{WebSocketFailureTracker, WebSocketHandler};

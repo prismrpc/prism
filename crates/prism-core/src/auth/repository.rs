@@ -6,6 +6,16 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDateTime, Utc};
 use sqlx::{Pool, Row, Sqlite, SqlitePool};
 
+/// Usage statistics for a specific date and method.
+#[derive(Debug, Clone)]
+pub struct UsageStats {
+    pub date: String,
+    pub method_name: String,
+    pub request_count: i64,
+    pub total_latency_ms: i64,
+    pub error_count: i64,
+}
+
 /// Repository trait for API key database operations.
 ///
 /// Provides an abstraction layer enabling testability (mock implementations)
@@ -63,6 +73,12 @@ pub trait ApiKeyRepository: Send + Sync {
         max_tokens: u32,
         refill_rate: u32,
     ) -> Result<(), AuthError>;
+
+    async fn get_usage_stats(
+        &self,
+        api_key_id: i64,
+        days: i64,
+    ) -> Result<Vec<UsageStats>, AuthError>;
 }
 
 pub struct SqliteRepository {
@@ -414,6 +430,38 @@ impl ApiKeyRepository for SqliteRepository {
             "rate limits updated - cache remains valid as it contains immutable blockchain data"
         );
         Ok(())
+    }
+
+    async fn get_usage_stats(
+        &self,
+        api_key_id: i64,
+        days: i64,
+    ) -> Result<Vec<UsageStats>, AuthError> {
+        let rows = sqlx::query(
+            r"
+            SELECT date, method_name, request_count, total_latency_ms, error_count
+            FROM api_key_usage
+            WHERE api_key_id = ?
+              AND date >= date('now', ? || ' days')
+            ORDER BY date DESC, method_name
+            ",
+        )
+        .bind(api_key_id)
+        .bind(format!("-{days}"))
+        .fetch_all(&self.pool)
+        .await?;
+
+        rows.into_iter()
+            .map(|row| {
+                Ok(UsageStats {
+                    date: Self::get_required(&row, "date")?,
+                    method_name: Self::get_required(&row, "method_name")?,
+                    request_count: Self::get_required(&row, "request_count")?,
+                    total_latency_ms: Self::get_required(&row, "total_latency_ms")?,
+                    error_count: Self::get_required(&row, "error_count")?,
+                })
+            })
+            .collect()
     }
 }
 

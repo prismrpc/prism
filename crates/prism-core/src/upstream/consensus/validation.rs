@@ -110,6 +110,7 @@ mod tests {
             error: None,
             id: Arc::new(json!(1)),
             cache_status: None,
+            serving_upstream: None,
         }
     }
 

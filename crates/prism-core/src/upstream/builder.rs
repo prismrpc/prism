@@ -7,10 +7,11 @@ use super::{
     load_balancer::LoadBalancer,
     manager::{UpstreamManager, UpstreamManagerConfig},
     router::{RoutingContext, SmartRouter},
+    runtime_registry::RuntimeUpstreamRegistry,
     scoring::{ScoringConfig, ScoringEngine},
 };
 use crate::chain::ChainState;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -56,6 +57,7 @@ pub struct UpstreamManagerBuilder {
     hedge_config: HedgeConfig,
     consensus_config: ConsensusConfig,
     router: Option<Arc<SmartRouter>>,
+    runtime_storage_path: Option<PathBuf>,
 }
 
 impl UpstreamManagerBuilder {
@@ -70,6 +72,7 @@ impl UpstreamManagerBuilder {
             hedge_config: HedgeConfig::default(),
             consensus_config: ConsensusConfig::default(),
             router: None,
+            runtime_storage_path: None,
         }
     }
 
@@ -135,6 +138,15 @@ impl UpstreamManagerBuilder {
         self
     }
 
+    /// Sets the storage path for runtime upstreams persistence.
+    ///
+    /// If set, runtime upstreams will be persisted to this file and loaded on restart.
+    #[must_use]
+    pub fn runtime_storage_path(mut self, path: PathBuf) -> Self {
+        self.runtime_storage_path = Some(path);
+        self
+    }
+
     /// Builds the `UpstreamManager`.
     ///
     /// # Errors
@@ -154,6 +166,9 @@ impl UpstreamManagerBuilder {
         let hedge_executor = Arc::new(HedgeExecutor::new(self.hedge_config));
         let scoring_engine = Arc::new(ScoringEngine::new(self.scoring_config, chain_state.clone()));
         let consensus_engine = Arc::new(ConsensusEngine::new(self.consensus_config));
+
+        // Create runtime upstream registry
+        let runtime_registry = Arc::new(RuntimeUpstreamRegistry::new(self.runtime_storage_path));
 
         // Create routing context
         let routing_context = Arc::new(RoutingContext::new(
@@ -176,6 +191,7 @@ impl UpstreamManagerBuilder {
             consensus_engine,
             routing_context,
             router,
+            runtime_registry,
         ))
     }
 }

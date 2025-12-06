@@ -14,6 +14,15 @@ bind_port = 3030
 max_concurrent_requests = 100
 request_timeout_seconds = 30
 
+[admin]
+enabled = true
+bind_address = "127.0.0.1"  # Default: localhost only (for security)
+port = 3031                 # Default: 3031
+prometheus_url = "http://localhost:9090"  # Prometheus server for historical metrics
+admin_token = "dev-admin-token-change-in-production"  # Set to enable admin authentication
+rate_limit_max_tokens = 100  # Burst capacity: 100 requests
+rate_limit_refill_rate = 10  # Sustained rate: 10 requests/sec
+
 # Your current RPC providers from .env converted to clean TOML format
 [upstreams]
 [[upstreams.providers]]

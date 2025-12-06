@@ -24,6 +24,7 @@ fn test_response(result: Option<serde_json::Value>, id: serde_json::Value) -> Js
         error: None,
         id: Arc::new(id),
         cache_status: None,
+        serving_upstream: None,
     }
 }
 
@@ -109,6 +110,7 @@ fn test_group_responses() {
         error: None,
         id: Arc::new(serde_json::json!(2)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let responses = vec![
@@ -140,6 +142,7 @@ fn test_hash_response_with_error() {
         }),
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let response2 = JsonRpcResponse {
@@ -152,6 +155,7 @@ fn test_hash_response_with_error() {
         }),
         id: Arc::new(serde_json::json!(2)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     assert_eq!(
@@ -186,6 +190,7 @@ async fn test_execute_consensus_all_agree() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     // Note: This test requires actual mock upstreams
@@ -219,6 +224,7 @@ async fn test_execute_consensus_quorum_reached_with_disagreement() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let minority_response = JsonRpcResponse {
@@ -227,6 +233,7 @@ async fn test_execute_consensus_quorum_reached_with_disagreement() {
         error: None,
         id: Arc::new(serde_json::json!(2)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let responses = vec![
@@ -265,6 +272,7 @@ async fn test_execute_consensus_quorum_not_reached_return_error() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let response2 = JsonRpcResponse {
@@ -273,6 +281,7 @@ async fn test_execute_consensus_quorum_not_reached_return_error() {
         error: None,
         id: Arc::new(serde_json::json!(2)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let response3 = JsonRpcResponse {
@@ -281,6 +290,7 @@ async fn test_execute_consensus_quorum_not_reached_return_error() {
         error: None,
         id: Arc::new(serde_json::json!(3)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let responses = vec![
@@ -346,6 +356,7 @@ async fn test_dispute_behavior_prefer_block_head_leader() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -356,6 +367,7 @@ async fn test_dispute_behavior_prefer_block_head_leader() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -388,6 +400,7 @@ async fn test_dispute_behavior_prefer_highest_score() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -398,6 +411,7 @@ async fn test_dispute_behavior_prefer_highest_score() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -427,6 +441,7 @@ async fn test_dispute_behavior_accept_any_valid() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -437,6 +452,7 @@ async fn test_dispute_behavior_accept_any_valid() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -469,6 +485,7 @@ async fn test_dispute_behavior_return_error() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -479,6 +496,7 @@ async fn test_dispute_behavior_return_error() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -583,6 +601,7 @@ async fn test_error_responses_mixed_with_success() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let responses = vec![
@@ -826,6 +845,7 @@ fn test_group_responses_with_identical_hashes() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let responses = vec![
@@ -852,6 +872,7 @@ fn test_group_responses_all_different() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -862,6 +883,7 @@ fn test_group_responses_all_different() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -872,6 +894,7 @@ fn test_group_responses_all_different() {
                 error: None,
                 id: Arc::new(serde_json::json!(3)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -896,6 +919,7 @@ async fn test_consensus_with_minimum_upstreams() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let responses =
@@ -923,6 +947,7 @@ async fn test_metadata_includes_all_response_groups() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let response2 = JsonRpcResponse {
@@ -931,6 +956,7 @@ async fn test_metadata_includes_all_response_groups() {
         error: None,
         id: Arc::new(serde_json::json!(2)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let responses = vec![
@@ -1015,6 +1041,7 @@ async fn test_penalty_application_verification() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let minority_response = JsonRpcResponse {
@@ -1023,6 +1050,7 @@ async fn test_penalty_application_verification() {
         error: None,
         id: Arc::new(serde_json::json!(2)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let responses = vec![
@@ -1090,6 +1118,7 @@ async fn test_consensus_with_scoring_disabled() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1100,6 +1129,7 @@ async fn test_consensus_with_scoring_disabled() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -1152,6 +1182,7 @@ async fn test_consensus_metadata_selection_methods() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1162,6 +1193,7 @@ async fn test_consensus_metadata_selection_methods() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -1185,6 +1217,7 @@ async fn test_consensus_metadata_selection_methods() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1195,6 +1228,7 @@ async fn test_consensus_metadata_selection_methods() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -1224,6 +1258,7 @@ async fn test_consensus_with_mixed_successes_and_failures() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let response_b = JsonRpcResponse {
@@ -1232,6 +1267,7 @@ async fn test_consensus_with_mixed_successes_and_failures() {
         error: None,
         id: Arc::new(serde_json::json!(2)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let responses = vec![
@@ -1260,6 +1296,7 @@ async fn test_consensus_response_hash_collision_resistance() {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let response2 = JsonRpcResponse {
@@ -1268,6 +1305,7 @@ async fn test_consensus_response_hash_collision_resistance() {
         error: None,
         id: Arc::new(serde_json::json!(2)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let hash1 = ConsensusEngine::hash_response(&response1);
@@ -1321,6 +1359,7 @@ async fn test_low_participants_all_behaviors() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1331,6 +1370,7 @@ async fn test_low_participants_all_behaviors() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -1358,6 +1398,7 @@ async fn test_low_participants_all_behaviors() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1368,6 +1409,7 @@ async fn test_low_participants_all_behaviors() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -1394,6 +1436,7 @@ fn test_response_type_nonempty_variants() {
             error: None,
             id: Arc::new(serde_json::json!(1)),
             cache_status: None,
+            serving_upstream: None,
         };
         let response_type = ResponseType::from_response(&response);
         assert!(
@@ -1421,6 +1464,7 @@ fn test_response_type_empty_variants() {
             error: None,
             id: Arc::new(serde_json::json!(1)),
             cache_status: None,
+            serving_upstream: None,
         };
         let response_type = ResponseType::from_response(&response);
         assert!(
@@ -1454,6 +1498,7 @@ fn test_response_type_error_variants() {
             error: Some(error),
             id: Arc::new(serde_json::json!(1)),
             cache_status: None,
+            serving_upstream: None,
         };
         let response_type = ResponseType::from_response(&response);
         assert!(
@@ -1489,6 +1534,7 @@ fn test_group_responses_includes_type_and_size() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1499,6 +1545,7 @@ fn test_group_responses_includes_type_and_size() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -1533,6 +1580,7 @@ fn test_apply_preferences_prefer_non_empty_sorts_by_type() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::Empty,
             response_size: 4,
@@ -1547,6 +1595,7 @@ fn test_apply_preferences_prefer_non_empty_sorts_by_type() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::NonEmpty,
             response_size: 50,
@@ -1575,6 +1624,7 @@ fn test_apply_preferences_disabled_uses_count_only() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::NonEmpty,
             response_size: 50,
@@ -1589,6 +1639,7 @@ fn test_apply_preferences_disabled_uses_count_only() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::Empty,
             response_size: 4,
@@ -1617,6 +1668,7 @@ fn test_apply_preferences_prefer_larger_responses() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::NonEmpty,
             response_size: 10,
@@ -1633,6 +1685,7 @@ fn test_apply_preferences_prefer_larger_responses() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::NonEmpty,
             response_size: 100,
@@ -1661,6 +1714,7 @@ fn test_apply_preferences_combined() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::Empty,
             response_size: 4,
@@ -1676,6 +1730,7 @@ fn test_apply_preferences_combined() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::NonEmpty,
             response_size: 10,
@@ -1691,6 +1746,7 @@ fn test_apply_preferences_combined() {
                 error: None,
                 id: Arc::new(serde_json::json!(3)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::NonEmpty,
             response_size: 100,
@@ -1730,6 +1786,7 @@ fn test_apply_preferences_type_priority_ordering() {
                 }),
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::ConsensusError,
             response_size: 0,
@@ -1744,6 +1801,7 @@ fn test_apply_preferences_type_priority_ordering() {
                 error: None,
                 id: Arc::new(serde_json::json!(2)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::Empty,
             response_size: 4,
@@ -1758,6 +1816,7 @@ fn test_apply_preferences_type_priority_ordering() {
                 error: None,
                 id: Arc::new(serde_json::json!(3)),
                 cache_status: None,
+                serving_upstream: None,
             },
             response_type: ResponseType::NonEmpty,
             response_size: 50,
@@ -1797,6 +1856,7 @@ async fn test_find_consensus_prefer_non_empty_always() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1807,6 +1867,7 @@ async fn test_find_consensus_prefer_non_empty_always() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1817,6 +1878,7 @@ async fn test_find_consensus_prefer_non_empty_always() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];
@@ -1854,6 +1916,7 @@ async fn test_find_consensus_prefer_non_empty_requires_threshold() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1864,6 +1927,7 @@ async fn test_find_consensus_prefer_non_empty_requires_threshold() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
         (
@@ -1874,6 +1938,7 @@ async fn test_find_consensus_prefer_non_empty_requires_threshold() {
                 error: None,
                 id: Arc::new(serde_json::json!(1)),
                 cache_status: None,
+                serving_upstream: None,
             },
         ),
     ];

@@ -43,6 +43,7 @@ async fn handle_single_request(proxy_engine: Arc<ProxyEngine>, payload: Value) -
                 }),
                 id: Arc::new(serde_json::Value::Null),
                 cache_status: None,
+                serving_upstream: None,
             };
             return (
                 StatusCode::BAD_REQUEST,
@@ -86,6 +87,7 @@ async fn handle_single_request(proxy_engine: Arc<ProxyEngine>, payload: Value) -
                 }),
                 id: Arc::new(serde_json::Value::Null),
                 cache_status: None,
+                serving_upstream: None,
             };
 
             (
@@ -116,6 +118,7 @@ fn validate_batch_payload(payload: Value) -> Result<Vec<Value>, BatchResponse> {
             }),
             id: Arc::new(serde_json::Value::Null),
             cache_status: None,
+            serving_upstream: None,
         };
         Err((
             StatusCode::BAD_REQUEST,
@@ -154,6 +157,7 @@ async fn process_batch_item(
                     error: Some(JsonRpcError { code: -32603, message: e.to_string(), data: None }),
                     id: item_id,
                     cache_status: None,
+                    serving_upstream: None,
                 };
                 let response_value = serde_json::to_value(error_response)
                     .expect("JsonRpcResponse serialization cannot fail");
@@ -172,6 +176,7 @@ async fn process_batch_item(
             }),
             id: item_id,
             cache_status: None,
+            serving_upstream: None,
         };
         let response_value = serde_json::to_value(error_response)
             .expect("JsonRpcResponse serialization cannot fail");
@@ -323,8 +328,14 @@ mod tests {
                 .expect("valid test upstream config"),
         );
         let metrics_collector = Arc::new(MetricsCollector::new().expect("valid test metrics"));
+        let alert_manager = Arc::new(prism_core::alerts::AlertManager::new());
 
-        Arc::new(ProxyEngine::new(cache_manager, upstream_manager, metrics_collector))
+        Arc::new(ProxyEngine::new(
+            cache_manager,
+            upstream_manager,
+            metrics_collector,
+            alert_manager,
+        ))
     }
 
     async fn body_to_bytes(body: Body) -> Vec<u8> {

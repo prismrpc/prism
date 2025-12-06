@@ -14,7 +14,7 @@ use chrono::{Duration as ChronoDuration, Utc};
 use prism_core::{
     auth::{
         api_key::{ApiKey, MethodPermission},
-        repository::ApiKeyRepository,
+        repository::{ApiKeyRepository, UsageStats},
         AuthError,
     },
     middleware::{auth::ApiKeyAuth, rate_limiting::RateLimiter, validation::ValidationError},
@@ -138,6 +138,14 @@ impl ApiKeyRepository for MockAuthRepository {
         _refill_rate: u32,
     ) -> Result<(), AuthError> {
         Ok(())
+    }
+
+    async fn get_usage_stats(
+        &self,
+        _api_key_id: i64,
+        _days: i64,
+    ) -> Result<Vec<UsageStats>, AuthError> {
+        Ok(vec![])
     }
 }
 

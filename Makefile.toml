@@ -83,8 +83,8 @@ description = "Run unit tests (excludes e2e tests which require devnet)"
 command = "cargo"
 args = ["nextest", "run", "--all-features", "-E", "not test(e2e::)"]
 
-[tasks.test-lib]
-description = "Run prism-core library tests only using nextest"
+[tasks.test-core]
+description = "Run prism-core library tests using nextest"
 command = "cargo"
 args = ["nextest", "run", "-p", "prism-core", "--all-features"]
 
@@ -98,10 +98,15 @@ description = "Run tests with verbose output using nextest"
 command = "cargo"
 args = ["nextest", "run", "--all-features", "--no-capture"]
 
-[tasks.test-core]
-description = "Run prism-core unit tests using nextest"
+[tasks.test-server]
+description = "Run server tests including admin API tests"
 command = "cargo"
-args = ["nextest", "run", "-p", "prism-core", "--no-capture"]
+args = ["nextest", "run", "-p", "server", "--all-features"]
+
+[tasks.test-admin]
+description = "Run admin API unit tests only"
+command = "cargo"
+args = ["nextest", "run", "-p", "server", "-E", "test(admin)", "--all-features"]
 
 [tasks.test-cargo]
 description = "Run tests with cargo test (fallback if nextest unavailable)"
@@ -148,12 +153,12 @@ args = ["bench", "-p", "prism-core", "--bench", "cache_benchmarks", "--bench", "
 # =============================================================================
 
 [tasks.run-server]
-description = "Run server with production config (JSON logs)"
+description = "Run server with production config (JSON logs, admin disabled)"
 command = "cargo"
 args = ["run", "--bin", "server"]
 
 [tasks.run-server-dev]
-description = "Run server with development config (pretty logs)"
+description = "Run server with development config (pretty logs, admin enabled on 3031)"
 command = "cargo"
 args = ["run", "--bin", "server"]
 env = { "PRISM_CONFIG" = "config/development.toml" }
@@ -162,6 +167,12 @@ env = { "PRISM_CONFIG" = "config/development.toml" }
 description = "Run server in release mode with production config"
 command = "cargo"
 args = ["run", "--release", "--bin", "server"]
+
+[tasks.run-server-admin]
+description = "Run server with admin API enabled (development config)"
+command = "cargo"
+args = ["run", "--bin", "server"]
+env = { "PRISM_CONFIG" = "config/development.toml", "RUST_LOG" = "warn,prism_core=info,server=info,admin=debug" }
 
 [tasks.run-cli]
 description = "Run the CLI tool (use -- to pass arguments)"
@@ -385,16 +396,82 @@ script = '''
 '''
 
 [tasks.run-server-devnet]
-description = "Run server with devnet configuration"
+description = "Run server with devnet config (admin enabled on 3031)"
 command = "cargo"
 args = ["run", "--bin", "server"]
 env = { "PRISM_CONFIG" = "docker/devnet/config.test.toml" }
 
 [tasks.run-server-devnet-debug]
-description = "Run server with devnet configuration"
+description = "Run server with devnet config and debug logging"
 command = "cargo"
 args = ["run", "--bin", "server"]
 env = { "PRISM_CONFIG" = "docker/devnet/config.test.toml", "RUST_LOG" = "debug" }
+
+# =============================================================================
+# ADMIN API TASKS - Admin interface testing and utilities
+# =============================================================================
+
+[tasks.admin-swagger]
+description = "Open admin Swagger UI in browser (requires running server with admin enabled)"
+script = '''
+echo "Opening Swagger UI at http://localhost:3031/admin/swagger-ui"
+xdg-open http://localhost:3031/admin/swagger-ui 2>/dev/null || open http://localhost:3031/admin/swagger-ui 2>/dev/null || echo "Please open http://localhost:3031/admin/swagger-ui in your browser"
+'''
+
+[tasks.admin-health]
+description = "Check admin API health endpoint"
+script = '''
+echo "Checking admin API health..."
+curl -s http://localhost:3031/admin/system/health | jq . || echo "Admin API not responding. Start server with: cargo make run-server-dev"
+'''
+
+[tasks.admin-status]
+description = "Get admin API system status"
+script = '''
+echo "Fetching system status..."
+curl -s http://localhost:3031/admin/system/status | jq . || echo "Admin API not responding"
+'''
+
+[tasks.admin-upstreams]
+description = "List all upstreams via admin API"
+script = '''
+echo "Fetching upstreams..."
+curl -s http://localhost:3031/admin/upstreams | jq . || echo "Admin API not responding"
+'''
+
+[tasks.admin-cache-stats]
+description = "Get cache statistics via admin API"
+script = '''
+echo "Fetching cache stats..."
+curl -s http://localhost:3031/admin/cache/stats | jq . || echo "Admin API not responding"
+'''
+
+[tasks.admin-metrics-kpis]
+description = "Get KPI metrics via admin API"
+script = '''
+echo "Fetching KPI metrics..."
+curl -s http://localhost:3031/admin/metrics/kpis | jq . || echo "Admin API not responding"
+'''
+
+[tasks.admin-test-all]
+description = "Test all major admin API endpoints"
+script = '''
+echo "Testing admin API endpoints..."
+echo ""
+echo "=== Health Check ==="
+curl -s http://localhost:3031/admin/system/health | jq .
+echo ""
+echo "=== System Status ==="
+curl -s http://localhost:3031/admin/system/status | jq .
+echo ""
+echo "=== Upstreams ==="
+curl -s http://localhost:3031/admin/upstreams | jq .
+echo ""
+echo "=== Cache Stats ==="
+curl -s http://localhost:3031/admin/cache/stats | jq .
+echo ""
+echo "Admin API test complete!"
+'''
 
 # =============================================================================
 # RUST E2E TESTS - Comprehensive Rust-based tests against devnet
@@ -681,8 +758,12 @@ echo "  build-release  - Build in release mode"
 echo "  clean          - Clean build artifacts"
 echo ""
 echo "Testing:"
-echo "  test           - Run all tests"
-echo "  test-performance - Run performance tests"
+echo "  test              - Run all unit tests"
+echo "  test-core         - Run prism-core tests only"
+echo "  test-server       - Run server tests (includes admin)"
+echo "  test-admin        - Run admin API tests only"
+echo "  test-performance  - Run performance tests"
+echo "  test-verbose      - Run tests with verbose output"
 echo ""
 echo "Benchmarks (Criterion):"
 echo "  bench          - Run all Criterion benchmarks"
@@ -693,10 +774,11 @@ echo "  bench-save     - Run and save baseline"
 echo "  bench-compare  - Compare against baseline"
 echo ""
 echo "Running the Server:"
-echo "  run-server         - Production config (JSON logs)"
-echo "  run-server-dev     - Development config (pretty logs)"
+echo "  run-server         - Production config (JSON logs, admin disabled)"
+echo "  run-server-dev     - Development config (pretty logs, admin on 3031)"
+echo "  run-server-admin   - Development config with admin debug logging"
 echo "  run-server-release - Release mode with production config"
-echo "  run-server-devnet  - Devnet config (local geth nodes)"
+echo "  run-server-devnet  - Devnet config (admin enabled on 3031)"
 echo ""
 echo "CLI Tools:"
 echo "  run-cli        - Run CLI (use -- for args)"
@@ -714,6 +796,16 @@ echo "  devnet-reset   - Reset to clean state"
 echo "  devnet-logs    - Show devnet logs"
 echo "  devnet-mine    - Mine blocks"
 echo "  devnet-fork    - Start with mainnet fork"
+echo ""
+echo "Admin API (requires server running with admin enabled):"
+echo "  admin-swagger      - Open Swagger UI (http://localhost:3031)"
+echo "  admin-health       - Check admin API health"
+echo "  admin-status       - Get system status"
+echo "  admin-upstreams    - List all upstreams"
+echo "  admin-cache-stats  - Get cache statistics"
+echo "  admin-metrics-kpis - Get KPI metrics"
+echo "  admin-test-all     - Test all major admin endpoints"
+echo "  test-admin         - Run admin API unit tests"
 echo ""
 echo "E2E Testing (Rust - requires devnet + server):"
 echo "  e2e-rust       - Run all Rust E2E tests"

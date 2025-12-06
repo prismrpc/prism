@@ -977,7 +977,7 @@ impl MetricsCollector {
         } else {
             let total_latency: u64 = metrics.latency_histogram.values().flatten().sum();
             let total_responses: usize =
-                metrics.latency_histogram.values().map(std::vec::Vec::len).sum();
+                metrics.latency_histogram.values().map(std::collections::VecDeque::len).sum();
             if total_responses > 0 {
                 total_latency as f64 / total_responses as f64
             } else {

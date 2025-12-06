@@ -63,7 +63,7 @@ mod tests {
     };
     use prism_core::auth::{
         api_key::{ApiKey, MethodPermission},
-        repository::ApiKeyRepository,
+        repository::{ApiKeyRepository, UsageStats},
         AuthError, AuthenticatedKey,
     };
     use std::sync::Arc;
@@ -218,6 +218,14 @@ mod tests {
             _refill_rate: u32,
         ) -> Result<(), AuthError> {
             Ok(())
+        }
+
+        async fn get_usage_stats(
+            &self,
+            _api_key_id: i64,
+            _days: i64,
+        ) -> Result<Vec<UsageStats>, AuthError> {
+            Ok(vec![])
         }
     }
 

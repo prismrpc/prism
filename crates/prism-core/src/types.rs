@@ -24,9 +24,16 @@ use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use std::{
     borrow::Cow,
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{Arc, LazyLock},
 };
+
+/// Maximum number of latency samples to retain per method:upstream key.
+///
+/// This bounds memory usage for latency histograms. When the limit is reached,
+/// the oldest samples are evicted (FIFO). With ~100 method:upstream pairs,
+/// total memory usage is bounded to ~8MB (100 * 10000 * 8 bytes per u64).
+pub const MAX_LATENCY_SAMPLES: usize = 10_000;
 
 /// JSON-RPC protocol version constant to avoid repeated allocations.
 /// Use `JSONRPC_VERSION_COW` for constructing requests/responses without allocation.
@@ -242,6 +249,7 @@ pub struct JsonRpcRequest {
 /// - `error`: Error information if the request failed (mutually exclusive with `result`)
 /// - `id`: Request identifier echoed from the request
 /// - `cache_status`: Optional Prism-specific extension indicating cache hit/miss status
+/// - `serving_upstream`: Optional name of the upstream that served this request (for metrics)
 ///
 /// # Performance Notes
 ///
@@ -276,6 +284,9 @@ pub struct JsonRpcResponse {
     pub id: Arc<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_status: Option<CacheStatus>,
+    /// Name of the upstream that served this request (used for metrics, not serialized to client)
+    #[serde(skip)]
+    pub serving_upstream: Option<Arc<str>>,
 }
 
 impl JsonRpcRequest {
@@ -300,6 +311,7 @@ impl JsonRpcResponse {
             error: None,
             id,
             cache_status: None,
+            serving_upstream: None,
         }
     }
 
@@ -312,6 +324,7 @@ impl JsonRpcResponse {
             error: Some(JsonRpcError { code, message, data: None }),
             id,
             cache_status: None,
+            serving_upstream: None,
         }
     }
 
@@ -324,6 +337,7 @@ impl JsonRpcResponse {
             error: None,
             id: Arc::clone(&request.id),
             cache_status: None,
+            serving_upstream: None,
         }
     }
 }
@@ -678,7 +692,7 @@ impl Default for UpstreamHealth {
 /// - `requests_total`: Total request count per RPC method
 /// - `cache_hits_total`: Cache hit count per RPC method
 /// - `upstream_errors_total`: Error count per upstream provider
-/// - `latency_histogram`: Latency samples per method:upstream pair
+/// - `latency_histogram`: Bounded latency samples per method:upstream pair (max 10k samples)
 ///
 /// # Example
 ///
@@ -700,7 +714,7 @@ pub struct RpcMetrics {
     pub requests_total: HashMap<&'static str, u64>,
     pub cache_hits_total: HashMap<&'static str, u64>,
     pub upstream_errors_total: HashMap<&'static str, u64>,
-    pub latency_histogram: HashMap<&'static str, Vec<u64>>,
+    pub latency_histogram: HashMap<&'static str, VecDeque<u64>>,
 }
 
 impl RpcMetrics {
@@ -742,6 +756,10 @@ impl RpcMetrics {
     ///
     /// Uses string interning for the composite key to avoid repeated allocations.
     /// The key format is `method:upstream` (e.g., `eth_call:alchemy`).
+    ///
+    /// Implements bounded FIFO eviction: when the sample count reaches
+    /// `MAX_LATENCY_SAMPLES`, the oldest sample is removed before adding the new one.
+    /// This prevents unbounded memory growth in long-running processes.
     #[inline]
     pub fn record_latency(&mut self, method: &str, upstream: &str, latency_ms: u64) {
         // Build composite key and intern it
@@ -749,7 +767,15 @@ impl RpcMetrics {
         key.push_str(method);
         key.push(':');
         key.push_str(upstream);
-        self.latency_histogram.entry(intern(&key)).or_default().push(latency_ms);
+
+        let samples = self.latency_histogram.entry(intern(&key)).or_default();
+
+        // Evict oldest sample if at capacity
+        if samples.len() >= MAX_LATENCY_SAMPLES {
+            samples.pop_front();
+        }
+
+        samples.push_back(latency_ms);
     }
 }
 
@@ -849,5 +875,79 @@ mod tests {
     #[should_panic(expected = "Invalid BlockRange")]
     fn test_block_range_invalid_panics_in_debug() {
         let _ = BlockRange::new(20, 10); // from > to should panic
+    }
+
+    // --- RpcMetrics tests ---
+
+    #[test]
+    fn test_metrics_basic_operations() {
+        let mut metrics = RpcMetrics::new();
+
+        metrics.increment_requests("eth_blockNumber");
+        metrics.increment_cache_hits("eth_blockNumber");
+        metrics.record_latency("eth_blockNumber", "alchemy", 45);
+
+        assert_eq!(metrics.requests_total.get("eth_blockNumber"), Some(&1));
+        assert_eq!(metrics.cache_hits_total.get("eth_blockNumber"), Some(&1));
+    }
+
+    #[test]
+    fn test_latency_histogram_bounded() {
+        let mut metrics = RpcMetrics::new();
+
+        // Add MAX_LATENCY_SAMPLES samples
+        for i in 0..MAX_LATENCY_SAMPLES {
+            metrics.record_latency("eth_call", "test", i as u64);
+        }
+
+        // Verify we have exactly MAX_LATENCY_SAMPLES
+        let samples = metrics.latency_histogram.get("eth_call:test").unwrap();
+        assert_eq!(samples.len(), MAX_LATENCY_SAMPLES);
+        assert_eq!(samples.front(), Some(&0)); // Oldest sample
+        assert_eq!(samples.back(), Some(&(MAX_LATENCY_SAMPLES as u64 - 1))); // Newest sample
+
+        // Add one more sample - should evict the oldest
+        metrics.record_latency("eth_call", "test", 99999);
+
+        let samples = metrics.latency_histogram.get("eth_call:test").unwrap();
+        assert_eq!(samples.len(), MAX_LATENCY_SAMPLES); // Still bounded
+        assert_eq!(samples.front(), Some(&1)); // Oldest (0) was evicted
+        assert_eq!(samples.back(), Some(&99999)); // Newest sample at back
+    }
+
+    #[test]
+    fn test_latency_histogram_fifo_eviction() {
+        let mut metrics = RpcMetrics::new();
+
+        // Fill to capacity with values 0..MAX_LATENCY_SAMPLES
+        for i in 0..MAX_LATENCY_SAMPLES {
+            metrics.record_latency("test", "upstream", i as u64);
+        }
+
+        // Add 100 more samples (should evict the first 100)
+        for i in 0..100 {
+            metrics.record_latency("test", "upstream", (MAX_LATENCY_SAMPLES + i) as u64);
+        }
+
+        let samples = metrics.latency_histogram.get("test:upstream").unwrap();
+        assert_eq!(samples.len(), MAX_LATENCY_SAMPLES);
+        assert_eq!(samples.front(), Some(&100)); // First 100 (0-99) were evicted
+        assert_eq!(samples.back(), Some(&((MAX_LATENCY_SAMPLES + 99) as u64)));
+    }
+
+    #[test]
+    fn test_latency_histogram_multiple_keys() {
+        let mut metrics = RpcMetrics::new();
+
+        metrics.record_latency("eth_call", "alchemy", 10);
+        metrics.record_latency("eth_call", "infura", 20);
+        metrics.record_latency("eth_blockNumber", "alchemy", 30);
+
+        assert_eq!(metrics.latency_histogram.get("eth_call:alchemy").unwrap().back(), Some(&10));
+        assert_eq!(metrics.latency_histogram.get("eth_call:infura").unwrap().back(), Some(&20));
+        assert_eq!(
+            metrics.latency_histogram.get("eth_blockNumber:alchemy").unwrap().back(),
+            Some(&30)
+        );
     }
 }

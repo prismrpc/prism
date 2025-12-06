@@ -516,6 +516,23 @@ pub struct CacheStats {
     pub total_log_ids_cached: usize,
     pub bitmap_memory_usage: usize,
     pub hot_window_size: usize,
+
+    // Hit/miss tracking for block cache
+    pub block_cache_hits: u64,
+    pub block_cache_misses: u64,
+
+    // Hit/miss tracking for transaction cache
+    pub transaction_cache_hits: u64,
+    pub transaction_cache_misses: u64,
+
+    // Hit/miss tracking for receipt cache
+    pub receipt_cache_hits: u64,
+    pub receipt_cache_misses: u64,
+
+    // Hit/miss tracking for log cache
+    pub log_cache_hits: u64,
+    pub log_cache_misses: u64,
+    pub log_cache_partial_hits: u64,
 }
 
 /// Reorg information
