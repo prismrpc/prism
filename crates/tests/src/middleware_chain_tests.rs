@@ -15,7 +15,7 @@ use prism_core::{
     auth::{
         api_key::{ApiKey, MethodPermission},
         repository::{ApiKeyRepository, UsageStats},
-        AuthError,
+        ApiKeyScope, AuthError,
     },
     middleware::{auth::ApiKeyAuth, rate_limiting::RateLimiter, validation::ValidationError},
     types::JsonRpcRequest,
@@ -178,7 +178,7 @@ fn create_api_key(id: i64, name: &str, is_active: bool) -> ApiKey {
         last_used_at: None,
         is_active,
         expires_at: None,
-        scope: Default::default(),
+        scope: ApiKeyScope::default(),
     }
 }
 

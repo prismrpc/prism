@@ -52,20 +52,17 @@ fn init_logging(config: &AppConfig, log_buffer: Option<Arc<server::admin::loggin
     // Optionally add the log buffer layer
     let log_buffer_layer = log_buffer.map(server::admin::logging::LogBufferLayer::new);
 
-    match config.logging.format.as_str() {
-        "json" => {
-            let fmt_layer = tracing_subscriber::fmt::layer().json();
-            registry.with(fmt_layer).with(log_buffer_layer).init();
-        }
+    if config.logging.format.as_str() == "json" {
+        let fmt_layer = tracing_subscriber::fmt::layer().json();
+        registry.with(fmt_layer).with(log_buffer_layer).init();
+    } else {
         // "pretty" and any other format default to pretty logging
-        _ => {
-            let fmt_layer = tracing_subscriber::fmt::layer()
-                .pretty()
-                .with_file(true)
-                .with_line_number(true)
-                .with_target(false);
-            registry.with(fmt_layer).with(log_buffer_layer).init();
-        }
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .pretty()
+            .with_file(true)
+            .with_line_number(true)
+            .with_target(false);
+        registry.with(fmt_layer).with(log_buffer_layer).init();
     }
 }
 
@@ -755,11 +752,7 @@ mod tests {
 
         // Should be a valid UUID
         let id = header.unwrap().to_str().unwrap();
-        assert!(
-            uuid::Uuid::parse_str(id).is_ok(),
-            "Generated ID should be valid UUID, got: {}",
-            id
-        );
+        assert!(uuid::Uuid::parse_str(id).is_ok(), "Generated ID should be valid UUID, got: {id}");
     }
 
     #[tokio::test]

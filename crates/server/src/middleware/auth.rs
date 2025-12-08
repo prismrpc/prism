@@ -142,7 +142,7 @@ mod tests {
     use prism_core::auth::{
         api_key::{ApiKey, MethodPermission},
         repository::{ApiKeyRepository, UsageStats},
-        AuthError, AuthenticatedKey,
+        ApiKeyScope, AuthError, AuthenticatedKey,
     };
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -183,7 +183,7 @@ mod tests {
                     updated_at: chrono::Utc::now(),
                     last_used_at: None,
                     expires_at: None,
-                    scope: Default::default(),
+                    scope: ApiKeyScope::default(),
                 }))
             } else {
                 Ok(None)
@@ -213,7 +213,7 @@ mod tests {
                     updated_at: chrono::Utc::now(),
                     last_used_at: None,
                     expires_at: None,
-                    scope: Default::default(),
+                    scope: ApiKeyScope::default(),
                 }))
             } else {
                 Ok(None)
@@ -239,7 +239,7 @@ mod tests {
                     updated_at: chrono::Utc::now(),
                     last_used_at: None,
                     expires_at: None,
-                    scope: Default::default(),
+                    scope: ApiKeyScope::default(),
                 }))
             } else {
                 Ok(None)

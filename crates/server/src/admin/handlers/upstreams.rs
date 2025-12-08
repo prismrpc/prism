@@ -86,7 +86,7 @@ fn validate_name(name: &str) -> Result<(), String> {
 
 /// Validates an upstream weight.
 fn validate_weight(weight: u32) -> Result<(), String> {
-    if weight < MIN_UPSTREAM_WEIGHT || weight > MAX_UPSTREAM_WEIGHT {
+    if !(MIN_UPSTREAM_WEIGHT..=MAX_UPSTREAM_WEIGHT).contains(&weight) {
         return Err(format!(
             "Weight must be between {MIN_UPSTREAM_WEIGHT} and {MAX_UPSTREAM_WEIGHT}."
         ));

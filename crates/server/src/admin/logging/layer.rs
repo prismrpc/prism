@@ -1,7 +1,7 @@
-//! Tracing layer that captures log events into the LogBuffer.
+//! Tracing layer that captures log events into the `LogBuffer`.
 //!
 //! This layer integrates with `tracing-subscriber` to capture log events
-//! and store them in the in-memory LogBuffer for querying via the admin API.
+//! and store them in the in-memory `LogBuffer` for querying via the admin API.
 
 use std::sync::Arc;
 
@@ -11,16 +11,16 @@ use tracing_subscriber::{layer::Context, registry::LookupSpan, Layer};
 use super::LogBuffer;
 use crate::admin::types::LogEntry;
 
-/// A tracing layer that captures log events into a LogBuffer.
+/// A tracing layer that captures log events into a `LogBuffer`.
 ///
 /// This layer converts tracing events into `LogEntry` objects and pushes
-/// them to the shared LogBuffer, making them queryable via the admin API.
+/// them to the shared `LogBuffer`, making them queryable via the admin API.
 pub struct LogBufferLayer {
     buffer: Arc<LogBuffer>,
 }
 
 impl LogBufferLayer {
-    /// Creates a new LogBufferLayer with the given buffer.
+    /// Creates a new `LogBufferLayer` with the given buffer.
     #[must_use]
     pub fn new(buffer: Arc<LogBuffer>) -> Self {
         Self { buffer }

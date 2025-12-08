@@ -23,11 +23,13 @@ impl CorrelationId {
     }
 
     /// Generates a new random correlation ID using UUID v4.
+    #[must_use]
     pub fn generate() -> Self {
         Self(Arc::from(Uuid::new_v4().to_string()))
     }
 
     /// Returns the correlation ID as a string slice.
+    #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -119,7 +121,7 @@ mod tests {
         let id = header.to_str().unwrap();
 
         // Should be a valid UUID
-        assert!(Uuid::parse_str(id).is_ok(), "Generated ID should be valid UUID, got: {}", id);
+        assert!(Uuid::parse_str(id).is_ok(), "Generated ID should be valid UUID, got: {id}");
     }
 
     #[tokio::test]

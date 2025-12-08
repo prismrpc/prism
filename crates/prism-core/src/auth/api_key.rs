@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 /// Scope/role for API key access control.
 ///
@@ -40,17 +40,6 @@ impl ApiKeyScope {
         matches!(self, Self::Admin | Self::Full)
     }
 
-    /// Parse scope from string (for database storage)
-    #[must_use]
-    pub fn from_str(s: &str) -> Option<Self> {
-        match s.to_lowercase().as_str() {
-            "rpc" => Some(Self::Rpc),
-            "admin" => Some(Self::Admin),
-            "full" => Some(Self::Full),
-            _ => None,
-        }
-    }
-
     /// Convert to string for database storage
     #[must_use]
     pub fn as_str(&self) -> &'static str {
@@ -65,6 +54,20 @@ impl ApiKeyScope {
 impl fmt::Display for ApiKeyScope {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.as_str())
+    }
+}
+
+impl FromStr for ApiKeyScope {
+    type Err = ();
+
+    /// Parse scope from string (for database storage)
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "rpc" => Ok(Self::Rpc),
+            "admin" => Ok(Self::Admin),
+            "full" => Ok(Self::Full),
+            _ => Err(()),
+        }
     }
 }
 
@@ -430,7 +433,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
-            scope: Default::default(),
+            scope: ApiKeyScope::default(),
         };
         assert!(!key_no_expiry.is_expired(), "Key without expiry should not be expired");
 
@@ -463,7 +466,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
-            scope: Default::default(),
+            scope: ApiKeyScope::default(),
         };
         assert!(key_needs_reset.needs_quota_reset(), "Key with past reset time should need reset");
 
@@ -495,7 +498,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
-            scope: Default::default(),
+            scope: ApiKeyScope::default(),
         };
         assert!(key_no_limit.is_within_quota(), "Key without limit should always be within quota");
 

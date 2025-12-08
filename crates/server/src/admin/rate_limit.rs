@@ -425,7 +425,7 @@ mod tests {
         for i in 0..10 {
             let limiter = Arc::clone(&limiter);
             let handle = thread::spawn(move || {
-                let ip = format!("192.168.{}.1", i);
+                let ip = format!("192.168.{i}.1");
                 let mut success_count = 0;
                 for _ in 0..100 {
                     if limiter.check(&ip) {

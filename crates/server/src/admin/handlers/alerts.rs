@@ -16,8 +16,6 @@ use crate::admin::{audit, types::AdminApiError, AdminState};
 
 /// Maximum length for alert rule names.
 const MAX_ALERT_RULE_NAME_LENGTH: usize = 256;
-/// Minimum cooldown period in seconds.
-const MIN_COOLDOWN_SECONDS: u64 = 0;
 /// Maximum cooldown period in seconds (24 hours).
 const MAX_COOLDOWN_SECONDS: u64 = 86400;
 
@@ -38,9 +36,7 @@ fn validate_alert_rule(name: &str, cooldown_seconds: u64) -> Result<(), String> 
             "Alert rule name too long. Maximum length is {MAX_ALERT_RULE_NAME_LENGTH} characters."
         ));
     }
-    if cooldown_seconds < MIN_COOLDOWN_SECONDS {
-        return Err(format!("Cooldown too short. Minimum is {MIN_COOLDOWN_SECONDS} seconds."));
-    }
+    // MIN_COOLDOWN_SECONDS is 0, so this check is always false - removed
     if cooldown_seconds > MAX_COOLDOWN_SECONDS {
         return Err(format!(
             "Cooldown too long. Maximum is {MAX_COOLDOWN_SECONDS} seconds (24 hours)."

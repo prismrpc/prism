@@ -262,7 +262,7 @@ impl BlockCache {
 
     /// Inserts a block header into both the hot window and persistent storage.
     /// Note: Headers are inserted into hot window unconditionally. The hot window's
-    /// insert() method will automatically handle window positioning and ignore blocks
+    /// `insert()` method will automatically handle window positioning and ignore blocks
     /// outside the valid range.
     pub async fn insert_header(&self, header: BlockHeader) {
         trace!(block = header.number, hash = ?header.hash, "inserting header");

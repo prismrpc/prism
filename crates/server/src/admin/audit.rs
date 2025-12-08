@@ -48,7 +48,7 @@ impl AuditEvent {
     ///
     /// # Arguments
     /// * `operation` - Type of operation (CREATE, UPDATE, DELETE)
-    /// * `resource_type` - Type of resource affected (upstream, alert_rule, api_key, etc.)
+    /// * `resource_type` - Type of resource affected (upstream, `alert_rule`, `api_key`, etc.)
     /// * `resource_id` - Identifier for the resource
     #[must_use]
     pub fn new(
@@ -113,7 +113,7 @@ impl AuditEvent {
 /// Logs a successful resource creation.
 ///
 /// # Arguments
-/// * `resource_type` - Type of resource created (e.g., "upstream", "alert_rule")
+/// * `resource_type` - Type of resource created (e.g., "upstream", "`alert_rule`")
 /// * `resource_id` - Identifier of the created resource
 /// * `client_ip` - Optional client socket address
 pub fn log_create(

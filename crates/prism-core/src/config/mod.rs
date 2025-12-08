@@ -619,13 +619,15 @@ impl AppConfig {
         }
 
         // Security warning: Admin API enabled without authentication
-        if self.admin.enabled && self.admin.admin_token.is_none() {
-            if self.environment != "development" && self.environment != "test" {
-                warn!(
-                    "SECURITY WARNING: Admin API is enabled without authentication! \
-                     Set PRISM_ADMIN__ADMIN_TOKEN environment variable to secure the admin API."
-                );
-            }
+        if self.admin.enabled &&
+            self.admin.admin_token.is_none() &&
+            self.environment != "development" &&
+            self.environment != "test"
+        {
+            warn!(
+                "SECURITY WARNING: Admin API is enabled without authentication! \
+                 Set PRISM_ADMIN__ADMIN_TOKEN environment variable to secure the admin API."
+            );
         }
 
         // Validate admin token is not empty if set

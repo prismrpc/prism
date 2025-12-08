@@ -673,24 +673,27 @@ impl WebSocketHandler {
         // Log transaction field structure to debug caching issues
         if let Some(tx_field) = block_data.get("transactions") {
             let tx_type = if tx_field.is_array() {
-                let arr = tx_field.as_array().unwrap();
-                if arr.is_empty() {
-                    "empty_array".to_string()
-                } else if let Some(first) = arr.first() {
-                    if first.is_string() {
-                        format!("array_of_hashes (count: {})", arr.len())
-                    } else if first.is_object() {
-                        format!("array_of_objects (count: {})", arr.len())
+                if let Some(arr) = tx_field.as_array() {
+                    if arr.is_empty() {
+                        "empty_array".to_string()
+                    } else if let Some(first) = arr.first() {
+                        if first.is_string() {
+                            format!("array_of_hashes (count: {})", arr.len())
+                        } else if first.is_object() {
+                            format!("array_of_objects (count: {})", arr.len())
+                        } else {
+                            format!("array_of_unknown (count: {})", arr.len())
+                        }
                     } else {
-                        format!("array_of_unknown (count: {})", arr.len())
+                        "empty_array".to_string()
                     }
                 } else {
-                    "empty_array".to_string()
+                    "unexpected_type: not_array".to_string()
                 }
             } else if tx_field.is_null() {
                 "null".to_string()
             } else {
-                format!("unexpected_type: {:?}", tx_field)
+                format!("unexpected_type: {tx_field:?}")
             };
 
             tracing::info!(

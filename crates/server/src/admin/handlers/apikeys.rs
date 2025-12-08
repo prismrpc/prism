@@ -21,6 +21,7 @@ use chrono::Utc;
 use prism_core::auth::{
     api_key::{ApiKey, MethodPermission},
     repository::ApiKeyRepository,
+    ApiKeyScope,
 };
 use std::{collections::HashMap, net::SocketAddr};
 
@@ -223,7 +224,7 @@ pub async fn create_api_key(
         last_used_at: None,
         is_active: true,
         expires_at: None,
-        scope: Default::default(),
+        scope: ApiKeyScope::default(),
     };
 
     // Get the methods to allow (default to empty if not specified)
@@ -242,7 +243,7 @@ pub async fn create_api_key(
         .ok_or_else(|| ApiKeyError::DatabaseError("Failed to retrieve created key".to_string()))?;
 
     // Audit log the API key creation (don't log the actual key)
-    audit::log_create("api_key", &created_key.id.to_string(), Some(addr));
+    audit::log_create("api_key", created_key.id.to_string(), Some(addr));
 
     Ok(Json(ApiKeyCreatedResponse {
         id: created_key.id,
@@ -310,7 +311,7 @@ pub async fn update_api_key(
     if !changes.is_empty() {
         audit::log_update(
             "api_key",
-            &id.to_string(),
+            id.to_string(),
             Some(addr),
             Some(serde_json::Value::Object(changes)),
         );
@@ -360,7 +361,7 @@ pub async fn delete_api_key(
         .map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?;
 
     // Audit log the API key deletion
-    audit::log_delete("api_key", &id.to_string(), Some(addr));
+    audit::log_delete("api_key", id.to_string(), Some(addr));
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -399,7 +400,7 @@ pub async fn revoke_api_key(
     // Audit log the API key revocation
     audit::log_update(
         "api_key",
-        &id.to_string(),
+        id.to_string(),
         Some(addr),
         Some(serde_json::json!({"revoked": true})),
     );

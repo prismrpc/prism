@@ -1,5 +1,5 @@
 use super::{
-    api_key::{ApiKey, ApiKeyScope, MethodPermission},
+    api_key::{ApiKey, MethodPermission},
     AuthError,
 };
 use async_trait::async_trait;
@@ -155,7 +155,7 @@ impl SqliteRepository {
                 .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
             scope: row
                 .get::<Option<String>, _>("scope")
-                .and_then(|s| ApiKeyScope::from_str(&s))
+                .and_then(|s| s.parse().ok())
                 .unwrap_or_default(),
         })
     }
@@ -549,6 +549,8 @@ impl ApiKeyRepository for SqliteRepository {
 
 #[cfg(test)]
 mod tests {
+    use crate::auth::ApiKeyScope;
+
     use super::*;
     use chrono::Duration;
 
@@ -623,7 +625,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
-            scope: Default::default(),
+            scope: ApiKeyScope::default(),
         };
 
         (api_key, plaintext_key)
@@ -1197,7 +1199,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
-            scope: Default::default(),
+            scope: ApiKeyScope::default(),
         };
 
         let result = repo.create(api_key, vec![]).await;
@@ -1237,7 +1239,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: Some(now + Duration::days(30)),
-            scope: Default::default(),
+            scope: ApiKeyScope::default(),
         };
 
         repo.create(api_key, vec![]).await.expect("Create should succeed");

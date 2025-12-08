@@ -245,7 +245,7 @@ impl UpstreamEndpoint {
         let cache_time = self.health_cache_time.load(Ordering::Relaxed);
         let now_ms = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis() as u64)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(0))
             .unwrap_or(0);
 
         if now_ms.saturating_sub(cache_time) < HEALTH_CACHE_TTL_MS {

@@ -62,12 +62,10 @@ fn mask_url(url: &str) -> String {
     let path = parsed.path().to_string();
     let parts: Vec<&str> = path.split('/').collect();
     if let Some(last) = parts.last() {
-        if last.len() > 20 {
-            if last.len() >= 8 {
-                let masked = format!("{}...{}", &last[..4], &last[last.len() - 4..]);
-                let new_path = format!("{}/{masked}", parts[..parts.len() - 1].join("/"));
-                parsed.set_path(&new_path);
-            }
+        if last.len() > 20 && last.len() >= 8 {
+            let masked = format!("{}...{}", &last[..4], &last[last.len() - 4..]);
+            let new_path = format!("{}/{masked}", parts[..parts.len() - 1].join("/"));
+            parsed.set_path(&new_path);
         }
     }
 
@@ -311,7 +309,7 @@ pub async fn export_config(
 #[serde(rename_all = "camelCase")]
 pub struct PersistConfigRequest {
     /// Path to persist the dynamic upstreams JSON file.
-    /// Defaults to "data/dynamic_upstreams.json".
+    /// Defaults to "`data/dynamic_upstreams.json`".
     #[serde(default = "default_persist_path")]
     pub path: String,
 }
@@ -344,6 +342,7 @@ pub struct PersistConfigResponse {
         (status = 500, description = "Failed to persist configuration")
     )
 )]
+#[allow(clippy::too_many_lines)]
 pub async fn persist_config(
     State(state): State<AdminState>,
     headers: HeaderMap,
@@ -352,8 +351,7 @@ pub async fn persist_config(
     let correlation_id = crate::admin::get_correlation_id(&headers);
 
     // Use default path if not provided
-    let persist_path =
-        request.as_ref().map(|r| r.path.clone()).unwrap_or_else(default_persist_path);
+    let persist_path = request.as_ref().map_or_else(default_persist_path, |r| r.path.clone());
 
     tracing::info!(
         correlation_id = ?correlation_id,

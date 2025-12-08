@@ -623,7 +623,7 @@ impl<T> MetricsDataResponse<T> {
 #[derive(Debug, Clone, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct AdminApiError {
-    /// Machine-readable error code (e.g., "UPSTREAM_NOT_FOUND").
+    /// Machine-readable error code (e.g., "`UPSTREAM_NOT_FOUND`").
     pub code: String,
     /// Human-readable error message.
     pub message: String,

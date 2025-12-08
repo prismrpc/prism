@@ -747,8 +747,8 @@ mod tests {
 
         // Minimal value: "0x1" -> should be all zeros except last byte
         let minimal = hex_to_u256("0x1").unwrap();
-        for i in 0..31 {
-            assert_eq!(minimal[i], 0x00, "Byte {i} should be zero for minimal value");
+        for (i, byte) in minimal.iter().enumerate().take(31) {
+            assert_eq!(*byte, 0x00, "Byte {i} should be zero for minimal value");
         }
         assert_eq!(minimal[31], 0x01, "Last byte should be 0x01");
 
