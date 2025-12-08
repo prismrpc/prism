@@ -119,7 +119,7 @@
 //! # Example Usage
 //!
 //! ```rust,no_run
-//! use prism_core::auth::{repository::SqliteRepository, AuthenticatedKey, ApiKeyScope};
+//! use prism_core::auth::{repository::SqliteRepository, ApiKeyScope, AuthenticatedKey};
 //! use std::sync::Arc;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -254,7 +254,7 @@ impl From<sqlx::Error> for AuthError {
 /// # Example
 ///
 /// ```
-/// use prism_core::auth::{AuthenticatedKey, ApiKeyScope};
+/// use prism_core::auth::{ApiKeyScope, AuthenticatedKey};
 /// use std::collections::HashMap;
 ///
 /// // After successful authentication:

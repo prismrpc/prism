@@ -174,7 +174,8 @@ impl BlocksHandler {
                 self.ctx.cache_manager.insert_body(body).await;
 
                 // Extract and cache individual transactions if present as objects
-                if let Some(transactions) = block_json.get("transactions").and_then(|v| v.as_array())
+                if let Some(transactions) =
+                    block_json.get("transactions").and_then(|v| v.as_array())
                 {
                     // Check if transactions are full objects (not just hashes)
                     if let Some(first_tx) = transactions.first() {

@@ -222,10 +222,7 @@ pub fn json_block_to_block_body(block: &Value) -> Option<BlockBody> {
                 hex_to_array::<32>(hash_str)
             } else if let Some(tx_obj) = tx.as_object() {
                 // Transaction is an object (full tx) - fullTransactions=true
-                tx_obj
-                    .get("hash")
-                    .and_then(|h| h.as_str())
-                    .and_then(hex_to_array::<32>)
+                tx_obj.get("hash").and_then(|h| h.as_str()).and_then(hex_to_array::<32>)
             } else {
                 None
             }
@@ -338,15 +335,22 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
         };
     }
 
-    let hash = require_field!("hash", tx.get("hash").and_then(|v| v.as_str()).and_then(hex_to_array::<32>));
+    let hash = require_field!(
+        "hash",
+        tx.get("hash").and_then(|v| v.as_str()).and_then(hex_to_array::<32>)
+    );
     let block_hash = tx.get("blockHash").and_then(|v| v.as_str()).and_then(hex_to_array::<32>);
     let block_number = tx.get("blockNumber").and_then(|v| v.as_str()).and_then(hex_to_u64);
     let transaction_index =
         tx.get("transactionIndex").and_then(|v| v.as_str()).and_then(hex_to_u32);
-    let from = require_field!("from", tx.get("from").and_then(|v| v.as_str()).and_then(hex_to_array::<20>));
+    let from = require_field!(
+        "from",
+        tx.get("from").and_then(|v| v.as_str()).and_then(hex_to_array::<20>)
+    );
     let to = tx.get("to").and_then(|v| v.as_str()).and_then(hex_to_array::<20>);
     // Value is variable-length hex (e.g., "0x0", "0xb59b9f7800"), needs padding to 32 bytes
-    let value = require_field!("value", tx.get("value").and_then(|v| v.as_str()).and_then(hex_to_u256));
+    let value =
+        require_field!("value", tx.get("value").and_then(|v| v.as_str()).and_then(hex_to_u256));
 
     // EIP-2718 tx types (0-255): 0=Legacy, 1=EIP-2930, 2=EIP-1559, 3=EIP-4844
     #[allow(clippy::cast_possible_truncation)]
@@ -361,18 +365,18 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
 
     // Parse gas pricing fields - all are variable-length hex values
     let gas_price = tx.get("gasPrice").and_then(|v| v.as_str()).and_then(hex_to_u256);
-    let max_fee_per_gas =
-        tx.get("maxFeePerGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
-    let max_priority_fee_per_gas = tx
-        .get("maxPriorityFeePerGas")
-        .and_then(|v| v.as_str())
-        .and_then(hex_to_u256);
+    let max_fee_per_gas = tx.get("maxFeePerGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
+    let max_priority_fee_per_gas =
+        tx.get("maxPriorityFeePerGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
     let max_fee_per_blob_gas =
         tx.get("maxFeePerBlobGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
 
-    let gas_limit = require_field!("gas", tx.get("gas").and_then(|v| v.as_str()).and_then(hex_to_u64));
-    let nonce = require_field!("nonce", tx.get("nonce").and_then(|v| v.as_str()).and_then(hex_to_u64));
-    let data = require_field!("input", tx.get("input").and_then(|v| v.as_str()).and_then(hex_to_bytes));
+    let gas_limit =
+        require_field!("gas", tx.get("gas").and_then(|v| v.as_str()).and_then(hex_to_u64));
+    let nonce =
+        require_field!("nonce", tx.get("nonce").and_then(|v| v.as_str()).and_then(hex_to_u64));
+    let data =
+        require_field!("input", tx.get("input").and_then(|v| v.as_str()).and_then(hex_to_bytes));
 
     // v is u64: can be large for EIP-155 legacy transactions (chainId * 2 + 35/36)
     let v = require_field!("v", tx.get("v").and_then(|v| v.as_str()).and_then(hex_to_u64));
@@ -704,13 +708,16 @@ mod tests {
         assert_eq!(odd, expected_odd);
 
         // Full 32-byte value
-        let full = hex_to_u256("0x0000000000000000000000000000000000000000000000000000000000000001").unwrap();
+        let full =
+            hex_to_u256("0x0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
         let mut expected_full = [0u8; 32];
         expected_full[31] = 1;
         assert_eq!(full, expected_full);
 
         // Too long should fail
-        assert!(hex_to_u256("0x00000000000000000000000000000000000000000000000000000000000000001").is_none());
+        assert!(hex_to_u256("0x00000000000000000000000000000000000000000000000000000000000000001")
+            .is_none());
 
         // Empty should fail
         assert!(hex_to_u256("0x").is_none());
@@ -794,13 +801,17 @@ mod tests {
         );
 
         // Value: original is compact, result may be padded - verify numeric equivalence
-        let orig_value = hex_to_u256(original_json.get("value").unwrap().as_str().unwrap()).unwrap();
-        let result_value = hex_to_u256(result_json.get("value").unwrap().as_str().unwrap()).unwrap();
+        let orig_value =
+            hex_to_u256(original_json.get("value").unwrap().as_str().unwrap()).unwrap();
+        let result_value =
+            hex_to_u256(result_json.get("value").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(orig_value, result_value, "value mismatch");
 
         // Gas price
-        let orig_gas_price = hex_to_u256(original_json.get("gasPrice").unwrap().as_str().unwrap()).unwrap();
-        let result_gas_price = hex_to_u256(result_json.get("gasPrice").unwrap().as_str().unwrap()).unwrap();
+        let orig_gas_price =
+            hex_to_u256(original_json.get("gasPrice").unwrap().as_str().unwrap()).unwrap();
+        let result_gas_price =
+            hex_to_u256(result_json.get("gasPrice").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(orig_gas_price, result_gas_price, "gasPrice mismatch");
 
         // r and s (signature components with stripped leading zeros)
@@ -853,12 +864,18 @@ mod tests {
         );
 
         // Verify EIP-1559 gas fields
-        let orig_max_fee = hex_to_u256(original_json.get("maxFeePerGas").unwrap().as_str().unwrap()).unwrap();
-        let result_max_fee = hex_to_u256(result_json.get("maxFeePerGas").unwrap().as_str().unwrap()).unwrap();
+        let orig_max_fee =
+            hex_to_u256(original_json.get("maxFeePerGas").unwrap().as_str().unwrap()).unwrap();
+        let result_max_fee =
+            hex_to_u256(result_json.get("maxFeePerGas").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(orig_max_fee, result_max_fee, "maxFeePerGas mismatch");
 
-        let orig_priority = hex_to_u256(original_json.get("maxPriorityFeePerGas").unwrap().as_str().unwrap()).unwrap();
-        let result_priority = hex_to_u256(result_json.get("maxPriorityFeePerGas").unwrap().as_str().unwrap()).unwrap();
+        let orig_priority =
+            hex_to_u256(original_json.get("maxPriorityFeePerGas").unwrap().as_str().unwrap())
+                .unwrap();
+        let result_priority =
+            hex_to_u256(result_json.get("maxPriorityFeePerGas").unwrap().as_str().unwrap())
+                .unwrap();
         assert_eq!(orig_priority, result_priority, "maxPriorityFeePerGas mismatch");
 
         // Verify s with minimal value
@@ -938,8 +955,10 @@ mod tests {
         );
 
         // Verify input data preserved
-        let orig_input = hex_to_bytes(original_json.get("input").unwrap().as_str().unwrap()).unwrap();
-        let result_input = hex_to_bytes(result_json.get("input").unwrap().as_str().unwrap()).unwrap();
+        let orig_input =
+            hex_to_bytes(original_json.get("input").unwrap().as_str().unwrap()).unwrap();
+        let result_input =
+            hex_to_bytes(result_json.get("input").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(orig_input, result_input, "input bytecode mismatch");
     }
 

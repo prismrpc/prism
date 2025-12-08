@@ -97,14 +97,15 @@ pub async fn admin_auth_middleware(
     };
 
     // Extract API key from header
-    let api_key = request
-        .headers()
-        .get("X-API-Key")
-        .and_then(|v| v.to_str().ok())
-        .ok_or_else(|| {
-            tracing::warn!("missing X-API-Key header for admin API");
-            StatusCode::UNAUTHORIZED
-        })?;
+    let api_key =
+        request
+            .headers()
+            .get("X-API-Key")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                tracing::warn!("missing X-API-Key header for admin API");
+                StatusCode::UNAUTHORIZED
+            })?;
 
     // Authenticate the API key
     let auth_key = auth.authenticate(api_key).await.map_err(|e| {
