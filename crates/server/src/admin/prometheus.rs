@@ -22,6 +22,11 @@ use crate::admin::types::{
     TimeSeriesPoint, WinnerDistribution,
 };
 
+/// Maximum number of cached Prometheus query results.
+const PROMETHEUS_CACHE_SIZE: usize = 100;
+/// Time-to-live for cached Prometheus query results in seconds.
+const PROMETHEUS_CACHE_TTL_SECS: u64 = 60;
+
 /// Sanitize a string for use as a Prometheus label value.
 /// Removes characters that could break or inject into `PromQL` queries.
 fn sanitize_label_value(s: &str) -> String {
@@ -120,8 +125,10 @@ impl PrometheusClient {
         Ok(Self {
             base_url: base_url.into(),
             client,
-            cache: Arc::new(Mutex::new(LruCache::new(NonZeroUsize::new(100).expect("100 > 0")))),
-            cache_ttl: Duration::from_secs(60),
+            cache: Arc::new(Mutex::new(LruCache::new(
+                NonZeroUsize::new(PROMETHEUS_CACHE_SIZE).expect("cache size > 0"),
+            ))),
+            cache_ttl: Duration::from_secs(PROMETHEUS_CACHE_TTL_SECS),
         })
     }
 

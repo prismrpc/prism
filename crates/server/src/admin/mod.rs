@@ -6,9 +6,9 @@
 
 #![allow(clippy::needless_for_each)]
 
+pub mod audit;
 pub mod handlers;
 pub mod logging;
-pub mod middleware;
 pub mod prometheus;
 pub mod rate_limit;
 pub mod types;
@@ -16,15 +16,17 @@ pub mod types;
 use std::{sync::Arc, time::Instant};
 
 use axum::{
+    http::HeaderMap,
     middleware as axum_middleware,
     routing::{get, post, put},
     Router,
 };
 use prism_core::{
-    auth::repository::SqliteRepository, chain::ChainState, config::AppConfig, proxy::ProxyEngine,
+    auth::repository::SqliteRepository, chain::ChainState, config::AppConfig,
+    middleware::ApiKeyAuth, proxy::ProxyEngine,
 };
 
-use crate::admin::logging::LogBuffer;
+use crate::{admin::logging::LogBuffer, middleware::AdminAuthState};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
@@ -45,6 +47,9 @@ pub struct AdminState {
 
     /// Optional API key repository (only available if auth is enabled).
     pub api_key_repo: Option<Arc<SqliteRepository>>,
+
+    /// Optional API key auth system (reused from RPC auth).
+    pub api_key_auth: Option<Arc<ApiKeyAuth>>,
 
     /// Log buffer for querying recent logs.
     pub log_buffer: Arc<LogBuffer>,
@@ -73,6 +78,7 @@ impl AdminState {
         config: Arc<AppConfig>,
         chain_state: Arc<ChainState>,
         api_key_repo: Option<Arc<SqliteRepository>>,
+        api_key_auth: Option<Arc<ApiKeyAuth>>,
         log_buffer: Arc<LogBuffer>,
     ) -> Self {
         // Initialize Prometheus client if URL is configured
@@ -94,6 +100,7 @@ impl AdminState {
             config,
             chain_state,
             api_key_repo,
+            api_key_auth,
             log_buffer,
             prometheus_client,
             start_time: Instant::now(),
@@ -112,6 +119,15 @@ impl AdminState {
         let mins = (secs % 3600) / 60;
         format!("{days}d {hours}h {mins}m")
     }
+}
+
+/// Extracts the correlation ID from request headers.
+///
+/// The correlation ID is set by the `correlation_id` middleware
+/// and is available via the `X-Request-ID` header.
+#[must_use]
+pub fn get_correlation_id(headers: &HeaderMap) -> Option<String> {
+    headers.get("x-request-id").and_then(|v| v.to_str().ok()).map(String::from)
 }
 
 /// `OpenAPI` documentation for the Prism Admin API.
@@ -175,6 +191,9 @@ impl AdminState {
         handlers::apikeys::delete_api_key,
         handlers::apikeys::revoke_api_key,
         handlers::apikeys::get_api_key_usage,
+        // Config endpoints
+        handlers::config::export_config,
+        handlers::config::persist_config,
         // Cache endpoints
         handlers::cache::get_stats,
         handlers::cache::get_hit_rate,
@@ -224,6 +243,12 @@ impl AdminState {
         types::ErrorDistribution,
         types::HedgingStats,
         types::WinnerDistribution,
+        types::DataSource,
+        types::MetricsDataResponse<Vec<types::LatencyDataPoint>>,
+        types::MetricsDataResponse<Vec<types::TimeSeriesPoint>>,
+        types::MetricsDataResponse<Vec<types::RequestMethodData>>,
+        types::MetricsDataResponse<Vec<types::ErrorDistribution>>,
+        types::MetricsDataResponse<types::HedgingStats>,
         types::LogEntry,
         types::LogQueryResponse,
         types::LogServicesResponse,
@@ -238,6 +263,7 @@ impl AdminState {
         types::UpdateWeightRequest,
         types::ClearCacheRequest,
         types::UpdateCacheSettingsRequest,
+        types::AdminApiError,
         prism_core::alerts::Alert,
         prism_core::alerts::AlertRule,
         prism_core::alerts::AlertStatus,
@@ -250,9 +276,13 @@ impl AdminState {
         crate::admin::handlers::alerts::ToggleResponse,
         crate::admin::handlers::alerts::BulkAlertRequest,
         crate::admin::handlers::alerts::BulkAlertResponse,
+        crate::admin::handlers::config::ConfigExportQuery,
+        crate::admin::handlers::config::PersistConfigRequest,
+        crate::admin::handlers::config::PersistConfigResponse,
     )),
     tags(
         (name = "System", description = "System status and configuration endpoints"),
+        (name = "Config", description = "Configuration export and management"),
         (name = "Upstreams", description = "Upstream provider management"),
         (name = "Cache", description = "Cache statistics and management"),
         (name = "Metrics", description = "Performance metrics and analytics"),
@@ -266,8 +296,8 @@ pub struct ApiDoc;
 /// Creates the admin API router with all endpoints.
 #[allow(clippy::too_many_lines)]
 pub fn create_admin_router(state: AdminState) -> Router {
-    // Extract admin token for authentication middleware
-    let admin_token = state.config.admin.admin_token.clone().map(Arc::new);
+    // Create admin auth state for the unified auth middleware
+    let admin_auth_state = AdminAuthState::new(state.api_key_auth.clone());
 
     // Create rate limiter if configured
     let rate_limiter = state
@@ -353,6 +383,9 @@ pub fn create_admin_router(state: AdminState) -> Router {
         // Bulk alert endpoints
         .route("/admin/alerts/bulk-resolve", post(handlers::alerts::bulk_resolve_alerts))
         .route("/admin/alerts/bulk-dismiss", post(handlers::alerts::bulk_dismiss_alerts))
+        // Config endpoints
+        .route("/admin/config/export", get(handlers::config::export_config))
+        .route("/admin/config/persist", post(handlers::config::persist_config))
         // Alert rule endpoints
         .route(
             "/admin/alerts/rules",
@@ -384,8 +417,10 @@ pub fn create_admin_router(state: AdminState) -> Router {
     };
 
     // Apply middleware layers (rate limiting first, then authentication)
-    let router = router
-        .layer(axum_middleware::from_fn_with_state(admin_token, middleware::admin_auth_middleware));
+    let router = router.layer(axum_middleware::from_fn_with_state(
+        admin_auth_state,
+        crate::middleware::admin_auth_middleware,
+    ));
 
     // Add rate limiting if configured (applied before auth middleware in execution order)
     let router = if let Some(limiter) = rate_limiter {

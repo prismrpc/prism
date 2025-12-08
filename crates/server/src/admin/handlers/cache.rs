@@ -4,16 +4,48 @@
 #![allow(clippy::cast_precision_loss)]
 #![allow(clippy::cast_possible_truncation)]
 
-use axum::{extract::State, response::IntoResponse, Json};
+use axum::{
+    extract::{ConnectInfo, State},
+    response::IntoResponse,
+    Json,
+};
+use std::net::SocketAddr;
 
 use crate::admin::{
+    audit,
     prometheus::parse_time_range,
     types::{
         BlockCacheStats, CacheHitByMethod, CacheHitDataPoint, CacheSettingsResponse, CacheStats,
-        LogCacheStats, MemoryAllocation, TimeRangeQuery, TransactionCacheStats,
+        DataSource, LogCacheStats, MemoryAllocation, MetricsDataResponse, TimeRangeQuery,
+        TransactionCacheStats,
     },
     AdminState,
 };
+
+/// Memory estimation constants for cache entries.
+/// These are rough averages based on typical Ethereum data sizes.
+mod memory_estimation {
+    /// Average size of a block header in bytes.
+    pub const BLOCK_HEADER_BYTES: usize = 500;
+    /// Average size of a block body in bytes.
+    pub const BLOCK_BODY_BYTES: usize = 2048;
+    /// Average size of a transaction in bytes.
+    pub const TRANSACTION_BYTES: usize = 300;
+    /// Average size of a receipt in bytes.
+    pub const RECEIPT_BYTES: usize = 200;
+}
+
+/// Estimates block cache memory usage based on header and body counts.
+fn estimate_block_cache_memory(header_count: usize, body_count: usize) -> usize {
+    header_count * memory_estimation::BLOCK_HEADER_BYTES +
+        body_count * memory_estimation::BLOCK_BODY_BYTES
+}
+
+/// Estimates transaction cache memory usage based on transaction and receipt counts.
+fn estimate_tx_cache_memory(tx_count: usize, receipt_count: usize) -> usize {
+    tx_count * memory_estimation::TRANSACTION_BYTES +
+        receipt_count * memory_estimation::RECEIPT_BYTES
+}
 
 /// Formats bytes into human-readable string.
 fn format_bytes(bytes: usize) -> String {
@@ -80,11 +112,14 @@ pub async fn get_stats(State(state): State<AdminState>) -> impl IntoResponse {
     };
 
     // Estimate memory usage (rough approximation based on entry counts)
-    // Block header ~500 bytes, body ~2KB average, transaction ~300 bytes, receipt ~200 bytes
-    let block_memory =
-        cache_stats_raw.header_cache_size * 500 + cache_stats_raw.body_cache_size * 2048;
-    let tx_memory =
-        cache_stats_raw.transaction_cache_size * 300 + cache_stats_raw.receipt_cache_size * 200;
+    let block_memory = estimate_block_cache_memory(
+        cache_stats_raw.header_cache_size,
+        cache_stats_raw.body_cache_size,
+    );
+    let tx_memory = estimate_tx_cache_memory(
+        cache_stats_raw.transaction_cache_size,
+        cache_stats_raw.receipt_cache_size,
+    );
 
     let cache_stats = CacheStats {
         block_cache: BlockCacheStats {
@@ -112,7 +147,7 @@ pub async fn get_stats(State(state): State<AdminState>) -> impl IntoResponse {
 
 /// GET /admin/cache/hit-rate
 ///
-/// Returns cache hit rate over time.
+/// Returns cache hit rate over time with data source indicator.
 #[utoipa::path(
     get,
     path = "/admin/cache/hit-rate",
@@ -121,7 +156,7 @@ pub async fn get_stats(State(state): State<AdminState>) -> impl IntoResponse {
         ("timeRange" = Option<String>, Query, description = "Time range: 24h, 7d, 30d (default: 24h)")
     ),
     responses(
-        (status = 200, description = "Cache hit rate time series data", body = Vec<CacheHitDataPoint>)
+        (status = 200, description = "Cache hit rate time series data with data source indicator", body = MetricsDataResponse<Vec<CacheHitDataPoint>>)
     )
 )]
 pub async fn get_hit_rate(
@@ -132,7 +167,9 @@ pub async fn get_hit_rate(
     if let Some(ref prom_client) = state.prometheus_client {
         let time_range = parse_time_range(&query.time_range);
         match prom_client.get_cache_hit_rate(time_range).await {
-            Ok(data) if !data.is_empty() => return Json(data),
+            Ok(data) if !data.is_empty() => {
+                return Json(MetricsDataResponse::from_prometheus(data));
+            }
             Ok(_) => {
                 tracing::debug!("no cache hit rate data from Prometheus");
             }
@@ -142,29 +179,65 @@ pub async fn get_hit_rate(
         }
     }
 
-    // Return empty data if Prometheus unavailable or query failed
-    let data: Vec<CacheHitDataPoint> = vec![CacheHitDataPoint {
+    // Fallback to in-memory snapshot when Prometheus is unavailable
+    let cache_stats_raw = state.proxy_engine.get_cache_manager().get_stats().await;
+
+    // Calculate current hit/miss rates from in-memory stats
+    let total_hits = cache_stats_raw.block_cache_hits +
+        cache_stats_raw.transaction_cache_hits +
+        cache_stats_raw.receipt_cache_hits +
+        cache_stats_raw.log_cache_hits;
+    let total_partial = cache_stats_raw.log_cache_partial_hits;
+    let total_misses = cache_stats_raw.block_cache_misses +
+        cache_stats_raw.transaction_cache_misses +
+        cache_stats_raw.receipt_cache_misses +
+        cache_stats_raw.log_cache_misses;
+
+    let total = total_hits + total_partial + total_misses;
+    let (hit_pct, partial_pct, miss_pct) = if total > 0 {
+        (
+            (total_hits as f64 / total as f64) * 100.0,
+            (total_partial as f64 / total as f64) * 100.0,
+            (total_misses as f64 / total as f64) * 100.0,
+        )
+    } else {
+        (0.0, 0.0, 100.0)
+    };
+
+    let data = vec![CacheHitDataPoint {
         timestamp: chrono::Utc::now().to_rfc3339(),
-        hit: 0.0,
-        partial: 0.0,
-        miss: 100.0,
+        hit: hit_pct,
+        partial: partial_pct,
+        miss: miss_pct,
     }];
 
-    Json(data)
+    let warning = if state.prometheus_client.is_some() {
+        "Prometheus query failed, showing in-memory snapshot"
+    } else {
+        "Prometheus not configured, showing in-memory snapshot"
+    };
+
+    Json(MetricsDataResponse {
+        data,
+        source: DataSource::InMemory,
+        warning: Some(warning.to_string()),
+    })
 }
 
 /// GET /admin/cache/hit-by-method
 ///
-/// Returns cache hit rate by RPC method.
+/// Returns cache hit rate by RPC method with data source indicator.
 #[utoipa::path(
     get,
     path = "/admin/cache/hit-by-method",
     tag = "Cache",
     responses(
-        (status = 200, description = "Cache hit rate breakdown by RPC method", body = Vec<CacheHitByMethod>)
+        (status = 200, description = "Cache hit rate breakdown by RPC method with data source indicator", body = MetricsDataResponse<Vec<CacheHitByMethod>>)
     )
 )]
 pub async fn get_hit_by_method(State(state): State<AdminState>) -> impl IntoResponse {
+    // Note: Prometheus doesn't currently track cache hit rates by method,
+    // so we always use in-memory data from the CacheManager
     let cache_stats_raw = state.proxy_engine.get_cache_manager().get_stats().await;
 
     // Calculate hit rates per method type using helper
@@ -194,7 +267,7 @@ pub async fn get_hit_by_method(State(state): State<AdminState>) -> impl IntoResp
         },
     ];
 
-    Json(data)
+    Json(MetricsDataResponse::from_in_memory(data))
 }
 
 /// GET /admin/cache/memory-allocation
@@ -212,13 +285,15 @@ pub async fn get_memory_allocation(State(state): State<AdminState>) -> impl Into
     let cache_stats_raw = state.proxy_engine.get_cache_manager().get_stats().await;
 
     // Estimate memory usage (rough approximation based on entry counts)
-    // Block header ~500 bytes, body ~2KB average
-    let block_memory =
-        (cache_stats_raw.header_cache_size * 500 + cache_stats_raw.body_cache_size * 2048) as u64;
+    let block_memory = estimate_block_cache_memory(
+        cache_stats_raw.header_cache_size,
+        cache_stats_raw.body_cache_size,
+    ) as u64;
 
-    // Transaction ~300 bytes, receipt ~200 bytes
-    let tx_memory = (cache_stats_raw.transaction_cache_size * 300 +
-        cache_stats_raw.receipt_cache_size * 200) as u64;
+    let tx_memory = estimate_tx_cache_memory(
+        cache_stats_raw.transaction_cache_size,
+        cache_stats_raw.receipt_cache_size,
+    ) as u64;
 
     let allocations = vec![
         MemoryAllocation {
@@ -256,12 +331,12 @@ pub async fn get_settings(State(state): State<AdminState>) -> impl IntoResponse 
     let config = &state.config.cache.manager_config;
 
     // Calculate estimated max sizes from config entry counts
-    // Using same estimation factors as get_stats():
-    // Block header ~500 bytes, body ~2KB, transaction ~300 bytes, receipt ~200 bytes
     let block_max_bytes =
-        config.block_cache.max_headers * 500 + config.block_cache.max_bodies * 2048;
-    let tx_max_bytes = config.transaction_cache.max_transactions * 300 +
-        config.transaction_cache.max_receipts * 200;
+        estimate_block_cache_memory(config.block_cache.max_headers, config.block_cache.max_bodies);
+    let tx_max_bytes = estimate_tx_cache_memory(
+        config.transaction_cache.max_transactions,
+        config.transaction_cache.max_receipts,
+    );
 
     // Log cache: rough estimate based on bitmap entries and exact results
     // Each exact result ~1KB, each bitmap entry ~100 bytes
@@ -294,6 +369,7 @@ pub async fn get_settings(State(state): State<AdminState>) -> impl IntoResponse 
 )]
 pub async fn clear_cache(
     State(state): State<AdminState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     axum::extract::Json(request): axum::extract::Json<crate::admin::types::ClearCacheRequest>,
 ) -> Result<axum::Json<crate::admin::types::SuccessResponse>, (axum::http::StatusCode, String)> {
     use axum::http::StatusCode;
@@ -305,18 +381,22 @@ pub async fn clear_cache(
             "block" => {
                 cache_manager.block_cache.clear_cache().await;
                 tracing::info!("cleared block cache");
+                audit::log_delete("cache", "block", Some(addr));
             }
             "transaction" => {
                 cache_manager.transaction_cache.clear_cache().await;
                 tracing::info!("cleared transaction cache");
+                audit::log_delete("cache", "transaction", Some(addr));
             }
             "logs" => {
                 cache_manager.log_cache.clear_cache().await;
                 tracing::info!("cleared log cache");
+                audit::log_delete("cache", "logs", Some(addr));
             }
             "all" => {
                 cache_manager.clear_cache().await;
                 tracing::info!("cleared all caches");
+                audit::log_delete("cache", "all", Some(addr));
             }
             unknown => {
                 return Err((StatusCode::BAD_REQUEST, format!("Unknown cache type: {unknown}")));
@@ -342,6 +422,7 @@ pub async fn clear_cache(
 )]
 pub async fn update_settings(
     State(_state): State<AdminState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     axum::extract::Json(request): axum::extract::Json<
         crate::admin::types::UpdateCacheSettingsRequest,
     >,
@@ -355,6 +436,14 @@ pub async fn update_settings(
     // For now, we'll return an error indicating this feature requires additional infrastructure.
 
     if request.retain_blocks.is_some() || request.cleanup_interval.is_some() {
+        // Audit log the failed attempt
+        audit::log_failed(
+            crate::admin::audit::AuditOperation::Update,
+            "cache_settings",
+            "global",
+            Some(addr),
+            Some(serde_json::json!({"error": "not_implemented"})),
+        );
         return Err((
             StatusCode::NOT_IMPLEMENTED,
             "Runtime cache configuration updates require additional infrastructure. \

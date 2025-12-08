@@ -7,6 +7,66 @@ use chrono::{DateTime, Utc};
 use ring::rand::{SecureRandom, SystemRandom};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use std::fmt;
+
+/// Scope/role for API key access control.
+///
+/// Determines which endpoints an API key can access:
+/// - `Rpc`: Can access JSON-RPC proxy endpoints only
+/// - `Admin`: Can access admin API endpoints only
+/// - `Full`: Can access both RPC and admin endpoints
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ApiKeyScope {
+    /// Access to JSON-RPC proxy endpoints only
+    #[default]
+    Rpc,
+    /// Access to admin API endpoints only
+    Admin,
+    /// Access to both RPC and admin endpoints
+    Full,
+}
+
+impl ApiKeyScope {
+    /// Check if this scope allows access to RPC endpoints
+    #[must_use]
+    pub fn allows_rpc(&self) -> bool {
+        matches!(self, Self::Rpc | Self::Full)
+    }
+
+    /// Check if this scope allows access to admin endpoints
+    #[must_use]
+    pub fn allows_admin(&self) -> bool {
+        matches!(self, Self::Admin | Self::Full)
+    }
+
+    /// Parse scope from string (for database storage)
+    #[must_use]
+    pub fn from_str(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "rpc" => Some(Self::Rpc),
+            "admin" => Some(Self::Admin),
+            "full" => Some(Self::Full),
+            _ => None,
+        }
+    }
+
+    /// Convert to string for database storage
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Rpc => "rpc",
+            Self::Admin => "admin",
+            Self::Full => "full",
+        }
+    }
+}
+
+impl fmt::Display for ApiKeyScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
 
 /// Base64 encode bytes for PHC salt format (no padding, URL-safe alphabet).
 fn base64_encode_salt(bytes: &[u8]) -> String {
@@ -84,6 +144,8 @@ pub struct ApiKey {
     pub is_active: bool,
     /// Optional expiration timestamp (None = never expires)
     pub expires_at: Option<DateTime<Utc>>,
+    /// Scope/role determining which endpoints this key can access
+    pub scope: ApiKeyScope,
 }
 
 impl ApiKey {
@@ -368,6 +430,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
+            scope: Default::default(),
         };
         assert!(!key_no_expiry.is_expired(), "Key without expiry should not be expired");
 
@@ -400,6 +463,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
+            scope: Default::default(),
         };
         assert!(key_needs_reset.needs_quota_reset(), "Key with past reset time should need reset");
 
@@ -431,6 +495,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
+            scope: Default::default(),
         };
         assert!(key_no_limit.is_within_quota(), "Key without limit should always be within quota");
 

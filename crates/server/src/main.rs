@@ -21,36 +21,51 @@ use server::{admin, middleware, router};
 use std::{net::SocketAddr, sync::Arc};
 use tokio::{signal, sync::broadcast};
 use tower::limit::ConcurrencyLimitLayer;
-use tower_http::compression::CompressionLayer;
+use tower_http::{compression::CompressionLayer, limit::RequestBodyLimitLayer};
 use tracing::{debug, error, info};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 /// Initializes the logging system based on the configuration.
-fn init_logging(config: &AppConfig) {
+///
+/// If a `LogBuffer` is provided, logs will also be captured into the buffer
+/// for querying via the admin API.
+fn init_logging(config: &AppConfig, log_buffer: Option<Arc<server::admin::logging::LogBuffer>>) {
     let filter = if let Ok(env_filter) = std::env::var("RUST_LOG") {
         if env_filter == "debug" {
-            EnvFilter::new("warn,prism_core=debug,server=debug,cli=debug,tests=debug")
+            EnvFilter::new("warn,prism_core=debug,server=debug,cli=debug,tests=debug,audit=debug")
         } else if env_filter == "trace" {
-            EnvFilter::new("warn,prism_core=trace,server=trace,cli=trace,tests=trace")
+            EnvFilter::new("warn,prism_core=trace,server=trace,cli=trace,tests=trace,audit=trace")
         } else {
             EnvFilter::try_from_env("RUST_LOG").unwrap_or_else(|_| {
-                EnvFilter::new("warn,prism_core=debug,server=debug,cli=debug,tests=debug")
+                EnvFilter::new(
+                    "warn,prism_core=debug,server=debug,cli=debug,tests=debug,audit=debug",
+                )
             })
         }
     } else {
-        EnvFilter::new("warn,prism_core=info,server=info,cli=info,tests=info")
+        EnvFilter::new("warn,prism_core=info,server=info,cli=info,tests=info,audit=info")
     };
 
+    // Create the base registry with filter
+    let registry = tracing_subscriber::registry().with(filter);
+
+    // Optionally add the log buffer layer
+    let log_buffer_layer = log_buffer.map(server::admin::logging::LogBufferLayer::new);
+
     match config.logging.format.as_str() {
-        "json" => tracing_subscriber::fmt().with_env_filter(filter).json().init(),
+        "json" => {
+            let fmt_layer = tracing_subscriber::fmt::layer().json();
+            registry.with(fmt_layer).with(log_buffer_layer).init();
+        }
         // "pretty" and any other format default to pretty logging
-        _ => tracing_subscriber::fmt()
-            .with_env_filter(filter)
-            .pretty()
-            .with_file(true)
-            .with_line_number(true)
-            .with_target(false)
-            .init(),
+        _ => {
+            let fmt_layer = tracing_subscriber::fmt::layer()
+                .pretty()
+                .with_file(true)
+                .with_line_number(true)
+                .with_target(false);
+            registry.with(fmt_layer).with(log_buffer_layer).init();
+        }
     }
 }
 
@@ -149,7 +164,10 @@ async fn main() -> Result<()> {
 
     let (shutdown_tx, _) = broadcast::channel::<()>(1);
 
-    init_logging(&config);
+    // Initialize log buffer early so it can capture all logs from startup
+    let log_buffer = Arc::new(server::admin::logging::LogBuffer::new(10000));
+
+    init_logging(&config, Some(log_buffer.clone()));
     info!("Starting RPC Aggregator");
     debug!(
         upstreams_count = config.upstreams.providers.len(),
@@ -188,25 +206,26 @@ async fn main() -> Result<()> {
 
     // Start admin server if enabled
     if config.admin.enabled {
-        // Initialize API key repository if auth is enabled
-        let api_key_repo = if config.auth.enabled {
-            Some(Arc::new(
+        // Initialize API key repository and auth system if auth is enabled
+        let (api_key_repo, api_key_auth) = if config.auth.enabled {
+            let repo = Arc::new(
                 SqliteRepository::new(&config.auth.database_url)
                     .await
                     .map_err(|e| anyhow::anyhow!("Auth repo init failed: {e}"))?,
-            ))
+            );
+            let auth = Arc::new(ApiKeyAuth::new(repo.clone()));
+            (Some(repo), Some(auth))
         } else {
-            None
+            (None, None)
         };
 
-        // Initialize log buffer with 10000 entry capacity
-        let log_buffer = Arc::new(server::admin::logging::LogBuffer::new(10000));
-
+        // Use the log_buffer created earlier (shared with tracing layer)
         let admin_state = admin::AdminState::new(
             services.proxy_engine,
             Arc::new(config.clone()),
             services.chain_state,
             api_key_repo,
+            api_key_auth,
             log_buffer,
         );
         let admin_app = admin::create_admin_router(admin_state);
@@ -245,6 +264,10 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+/// Graceful shutdown timeout in seconds.
+/// After this timeout, the server will be forcefully terminated.
+const GRACEFUL_SHUTDOWN_TIMEOUT_SECS: u64 = 30;
+
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = signal::ctrl_c().await {
@@ -280,17 +303,27 @@ async fn shutdown_signal() {
         () = terminate => {},
     }
 
-    info!("Shutdown signal received");
+    info!(
+        "Shutdown signal received, starting graceful shutdown (timeout: {}s)",
+        GRACEFUL_SHUTDOWN_TIMEOUT_SECS
+    );
 }
 
 async fn create_app_with_security(
     proxy_engine: Arc<ProxyEngine>,
     config: &AppConfig,
 ) -> Result<Router> {
+    // Create request ID layers for distributed tracing
+    let (set_request_id, propagate_request_id) = middleware::create_request_id_layers();
+    let (set_request_id_public, propagate_request_id_public) =
+        middleware::create_request_id_layers();
+
     let public = Router::new()
         .route("/health", get(router::handle_health))
         .route("/metrics", get(router::handle_metrics))
-        .with_state(proxy_engine.clone());
+        .with_state(proxy_engine.clone())
+        .layer(propagate_request_id_public)
+        .layer(set_request_id_public);
 
     let mut rpc = Router::new()
         .route("/", post(router::handle_rpc))
@@ -309,7 +342,14 @@ async fn create_app_with_security(
 
     rpc = rpc.layer(ConcurrencyLimitLayer::new(config.server.max_concurrent_requests));
 
+    // Limit request body size to 1MB to prevent memory exhaustion attacks
+    rpc = rpc.layer(RequestBodyLimitLayer::new(1024 * 1024));
+
     rpc = rpc.layer(CompressionLayer::new());
+
+    // Add correlation ID middleware for distributed tracing
+    // Layers are applied in reverse order, so propagate runs after set
+    rpc = rpc.layer(propagate_request_id).layer(set_request_id);
 
     let app = public.merge(rpc);
     Ok(app)
@@ -694,5 +734,56 @@ mod tests {
 
             assert!(result.is_ok());
         }
+    }
+
+    #[tokio::test]
+    async fn test_correlation_id_generated_when_missing() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_no_auth();
+
+        let app = create_app_with_security(proxy_engine, &config)
+            .await
+            .expect("Failed to create app");
+
+        let request = Request::builder().uri("/health").method("GET").body(Body::empty()).unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Should have X-Request-ID header in response
+        let header = response.headers().get("x-request-id");
+        assert!(header.is_some(), "Response should have x-request-id header");
+
+        // Should be a valid UUID
+        let id = header.unwrap().to_str().unwrap();
+        assert!(
+            uuid::Uuid::parse_str(id).is_ok(),
+            "Generated ID should be valid UUID, got: {}",
+            id
+        );
+    }
+
+    #[tokio::test]
+    async fn test_correlation_id_preserved_from_request() {
+        let proxy_engine = create_test_proxy_engine();
+        let config = create_test_config_no_auth();
+
+        let app = create_app_with_security(proxy_engine, &config)
+            .await
+            .expect("Failed to create app");
+
+        let custom_id = "my-custom-request-id-12345";
+        let request = Request::builder()
+            .uri("/health")
+            .method("GET")
+            .header("x-request-id", custom_id)
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        // Should preserve the original ID
+        let header = response.headers().get("x-request-id");
+        assert!(header.is_some(), "Response should have x-request-id header");
+        assert_eq!(header.unwrap().to_str().unwrap(), custom_id);
     }
 }

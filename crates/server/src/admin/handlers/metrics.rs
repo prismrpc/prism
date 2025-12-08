@@ -9,8 +9,9 @@ use axum::{extract::State, response::IntoResponse, Json};
 use crate::admin::{
     prometheus::parse_time_range,
     types::{
-        ErrorDistribution, HedgingStats, KPIMetric, LatencyDataPoint, RequestMethodData,
-        TimeRangeQuery, TimeSeriesPoint, Trend, WinnerDistribution,
+        DataSource, ErrorDistribution, HedgingStats, KPIMetric, LatencyDataPoint,
+        MetricsDataResponse, RequestMethodData, TimeRangeQuery, TimeSeriesPoint, Trend,
+        WinnerDistribution,
     },
     AdminState,
 };
@@ -150,7 +151,7 @@ pub async fn get_kpis(State(state): State<AdminState>) -> impl IntoResponse {
         ("timeRange" = Option<String>, Query, description = "Time range (e.g., '1h', '24h', '7d'). Default: 24h")
     ),
     responses(
-        (status = 200, description = "Latency percentiles over time", body = Vec<LatencyDataPoint>),
+        (status = 200, description = "Latency percentiles over time with data source indicator", body = MetricsDataResponse<Vec<LatencyDataPoint>>),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -162,7 +163,9 @@ pub async fn get_latency(
     if let Some(ref prom_client) = state.prometheus_client {
         let time_range = parse_time_range(&query.time_range);
         match prom_client.get_latency_percentiles(time_range).await {
-            Ok(data) if !data.is_empty() => return Json(data),
+            Ok(data) if !data.is_empty() => {
+                return Json(MetricsDataResponse::from_prometheus(data));
+            }
             Ok(_) => {
                 tracing::debug!("no latency data from Prometheus");
             }
@@ -185,7 +188,17 @@ pub async fn get_latency(
         p99: metrics_summary.average_latency_ms,
     }];
 
-    Json(data)
+    let warning = if state.prometheus_client.is_some() {
+        "Prometheus query failed, showing in-memory snapshot"
+    } else {
+        "Prometheus not configured, showing in-memory snapshot"
+    };
+
+    Json(MetricsDataResponse {
+        data,
+        source: DataSource::InMemory,
+        warning: Some(warning.to_string()),
+    })
 }
 
 /// GET /admin/metrics/request-volume
@@ -199,7 +212,7 @@ pub async fn get_latency(
         ("timeRange" = Option<String>, Query, description = "Time range (e.g., '1h', '24h', '7d'). Default: 24h")
     ),
     responses(
-        (status = 200, description = "Request volume time series", body = Vec<TimeSeriesPoint>),
+        (status = 200, description = "Request volume time series with data source indicator", body = MetricsDataResponse<Vec<TimeSeriesPoint>>),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -211,7 +224,9 @@ pub async fn get_request_volume(
     if let Some(ref prom_client) = state.prometheus_client {
         let time_range = parse_time_range(&query.time_range);
         match prom_client.get_request_rate(time_range).await {
-            Ok(data) if !data.is_empty() => return Json(data),
+            Ok(data) if !data.is_empty() => {
+                return Json(MetricsDataResponse::from_prometheus(data));
+            }
             Ok(_) => {
                 tracing::debug!("no request volume data from Prometheus");
             }
@@ -232,7 +247,17 @@ pub async fn get_request_volume(
         value: metrics_summary.total_requests as f64,
     }];
 
-    Json(data)
+    let warning = if state.prometheus_client.is_some() {
+        "Prometheus query failed, showing in-memory total count"
+    } else {
+        "Prometheus not configured, showing in-memory total count"
+    };
+
+    Json(MetricsDataResponse {
+        data,
+        source: DataSource::InMemory,
+        warning: Some(warning.to_string()),
+    })
 }
 
 /// GET /admin/metrics/request-methods
@@ -246,7 +271,7 @@ pub async fn get_request_volume(
         ("timeRange" = Option<String>, Query, description = "Time range (e.g., '1h', '24h', '7d'). Default: 24h")
     ),
     responses(
-        (status = 200, description = "Request distribution by method", body = Vec<RequestMethodData>),
+        (status = 200, description = "Request distribution by method with data source indicator", body = MetricsDataResponse<Vec<RequestMethodData>>),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -258,7 +283,9 @@ pub async fn get_request_methods(
     if let Some(ref prom_client) = state.prometheus_client {
         let time_range = parse_time_range(&query.time_range);
         match prom_client.get_request_by_method(time_range).await {
-            Ok(data) if !data.is_empty() => return Json(data),
+            Ok(data) if !data.is_empty() => {
+                return Json(MetricsDataResponse::from_prometheus(data));
+            }
             Ok(_) => {
                 tracing::debug!("no request method data from Prometheus");
             }
@@ -292,7 +319,17 @@ pub async fn get_request_methods(
     // Sort by count descending for better presentation
     data.sort_by(|a, b| b.count.cmp(&a.count));
 
-    Json(data)
+    let warning = if state.prometheus_client.is_some() {
+        "Prometheus query failed, showing in-memory method counts"
+    } else {
+        "Prometheus not configured, showing in-memory method counts"
+    };
+
+    Json(MetricsDataResponse {
+        data,
+        source: DataSource::InMemory,
+        warning: Some(warning.to_string()),
+    })
 }
 
 /// GET /admin/metrics/error-distribution
@@ -307,7 +344,7 @@ pub async fn get_request_methods(
         ("timeRange" = Option<String>, Query, description = "Time range (e.g., '1h', '24h', '7d'). Default: 24h")
     ),
     responses(
-        (status = 200, description = "Error distribution by type", body = Vec<ErrorDistribution>),
+        (status = 200, description = "Error distribution by type with data source indicator", body = MetricsDataResponse<Vec<ErrorDistribution>>),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -319,7 +356,9 @@ pub async fn get_error_distribution(
     if let Some(ref prom_client) = state.prometheus_client {
         let time_range = parse_time_range(&query.time_range);
         match prom_client.get_error_distribution(time_range).await {
-            Ok(data) if !data.is_empty() => return Json(data),
+            Ok(data) if !data.is_empty() => {
+                return Json(MetricsDataResponse::from_prometheus(data));
+            }
             Ok(_) => {
                 tracing::debug!("no error distribution data from Prometheus");
             }
@@ -355,7 +394,17 @@ pub async fn get_error_distribution(
     // Sort by count descending for better presentation
     data.sort_by(|a, b| b.count.cmp(&a.count));
 
-    Json(data)
+    let warning = if state.prometheus_client.is_some() {
+        "Prometheus query failed, showing in-memory errors by upstream"
+    } else {
+        "Prometheus not configured, showing in-memory errors by upstream"
+    };
+
+    Json(MetricsDataResponse {
+        data,
+        source: DataSource::InMemory,
+        warning: Some(warning.to_string()),
+    })
 }
 
 /// GET /admin/metrics/hedging-stats
@@ -370,7 +419,7 @@ pub async fn get_error_distribution(
         ("timeRange" = Option<String>, Query, description = "Time range (e.g., '1h', '24h', '7d'). Default: 24h")
     ),
     responses(
-        (status = 200, description = "Hedging performance statistics", body = HedgingStats),
+        (status = 200, description = "Hedging performance statistics with data source indicator", body = MetricsDataResponse<HedgingStats>),
         (status = 500, description = "Internal server error")
     )
 )]
@@ -382,7 +431,9 @@ pub async fn get_hedging_stats(
     if let Some(ref prom_client) = state.prometheus_client {
         let time_range = parse_time_range(&query.time_range);
         match prom_client.get_hedging_stats(time_range).await {
-            Ok(hedging_stats) => return Json(hedging_stats),
+            Ok(hedging_stats) => {
+                return Json(MetricsDataResponse::from_prometheus(hedging_stats));
+            }
             Err(e) => {
                 tracing::warn!("failed to query Prometheus for hedging stats: {}", e);
             }
@@ -398,5 +449,15 @@ pub async fn get_hedging_stats(
         winner_distribution: WinnerDistribution { primary: 100.0, hedged: 0.0 },
     };
 
-    Json(hedging_stats)
+    let warning = if state.prometheus_client.is_some() {
+        "Prometheus query failed, showing default fallback data"
+    } else {
+        "Prometheus not configured, showing default fallback data"
+    };
+
+    Json(MetricsDataResponse {
+        data: hedging_stats,
+        source: DataSource::Fallback,
+        warning: Some(warning.to_string()),
+    })
 }

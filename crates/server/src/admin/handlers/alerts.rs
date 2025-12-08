@@ -3,15 +3,51 @@
 #![allow(clippy::missing_errors_doc)]
 
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{ConnectInfo, Path, Query, State},
+    http::HeaderMap,
     response::IntoResponse,
     Json,
 };
 use prism_core::alerts::{Alert, AlertCondition, AlertRule, AlertSeverity, AlertStatus};
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
-use crate::admin::AdminState;
+use crate::admin::{audit, types::AdminApiError, AdminState};
+
+/// Maximum length for alert rule names.
+const MAX_ALERT_RULE_NAME_LENGTH: usize = 256;
+/// Minimum cooldown period in seconds.
+const MIN_COOLDOWN_SECONDS: u64 = 0;
+/// Maximum cooldown period in seconds (24 hours).
+const MAX_COOLDOWN_SECONDS: u64 = 86400;
+
+/// Validates an alert rule's name and cooldown period.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The name is empty
+/// - The name exceeds the maximum length
+/// - The cooldown period exceeds the maximum allowed value
+fn validate_alert_rule(name: &str, cooldown_seconds: u64) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Alert rule name cannot be empty".to_string());
+    }
+    if name.len() > MAX_ALERT_RULE_NAME_LENGTH {
+        return Err(format!(
+            "Alert rule name too long. Maximum length is {MAX_ALERT_RULE_NAME_LENGTH} characters."
+        ));
+    }
+    if cooldown_seconds < MIN_COOLDOWN_SECONDS {
+        return Err(format!("Cooldown too short. Minimum is {MIN_COOLDOWN_SECONDS} seconds."));
+    }
+    if cooldown_seconds > MAX_COOLDOWN_SECONDS {
+        return Err(format!(
+            "Cooldown too long. Maximum is {MAX_COOLDOWN_SECONDS} seconds (24 hours)."
+        ));
+    }
+    Ok(())
+}
 
 // ========== Request/Response Types ==========
 
@@ -122,16 +158,19 @@ pub async fn list_alerts(
     ),
     responses(
         (status = 200, description = "Alert details", body = Alert),
-        (status = 404, description = "Alert not found")
+        (status = 404, description = "Alert not found", body = crate::admin::types::AdminApiError)
     )
 )]
 pub async fn get_alert(
     State(state): State<AdminState>,
     Path(alert_id): Path<String>,
-) -> Result<Json<Alert>, StatusCode> {
+) -> Result<Json<Alert>, crate::admin::types::AdminApiErrorResponse> {
     let alert_manager = &state.proxy_engine.get_alert_manager();
 
-    alert_manager.get_alert(&alert_id).map(Json).ok_or(StatusCode::NOT_FOUND)
+    alert_manager
+        .get_alert(&alert_id)
+        .map(Json)
+        .ok_or_else(|| AdminApiError::alert_not_found(&alert_id))
 }
 
 /// POST /admin/alerts/:id/acknowledge
@@ -146,19 +185,31 @@ pub async fn get_alert(
     ),
     responses(
         (status = 200, description = "Alert acknowledged", body = SuccessResponse),
-        (status = 404, description = "Alert not found")
+        (status = 404, description = "Alert not found", body = crate::admin::types::AdminApiError)
     )
 )]
 pub async fn acknowledge_alert(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(alert_id): Path<String>,
-) -> Result<Json<SuccessResponse>, StatusCode> {
+) -> Result<Json<SuccessResponse>, crate::admin::types::AdminApiErrorResponse> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
     let alert_manager = &state.proxy_engine.get_alert_manager();
 
     if alert_manager.acknowledge_alert(&alert_id) {
+        // Audit log the acknowledgement
+        audit::log_update("alert", &alert_id, Some(addr), None);
+
+        tracing::info!(
+            correlation_id = ?correlation_id,
+            alert_id = %alert_id,
+            "acknowledged alert"
+        );
+
         Ok(Json(SuccessResponse { success: true, message: Some("Alert acknowledged".to_string()) }))
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Err(AdminApiError::alert_not_found(&alert_id))
     }
 }
 
@@ -174,19 +225,31 @@ pub async fn acknowledge_alert(
     ),
     responses(
         (status = 200, description = "Alert resolved", body = SuccessResponse),
-        (status = 404, description = "Alert not found")
+        (status = 404, description = "Alert not found", body = crate::admin::types::AdminApiError)
     )
 )]
 pub async fn resolve_alert(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(alert_id): Path<String>,
-) -> Result<Json<SuccessResponse>, StatusCode> {
+) -> Result<Json<SuccessResponse>, crate::admin::types::AdminApiErrorResponse> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
     let alert_manager = &state.proxy_engine.get_alert_manager();
 
     if alert_manager.resolve_alert(&alert_id) {
+        // Audit log the resolution
+        audit::log_update("alert", &alert_id, Some(addr), None);
+
+        tracing::info!(
+            correlation_id = ?correlation_id,
+            alert_id = %alert_id,
+            "resolved alert"
+        );
+
         Ok(Json(SuccessResponse { success: true, message: Some("Alert resolved".to_string()) }))
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Err(AdminApiError::alert_not_found(&alert_id))
     }
 }
 
@@ -230,19 +293,31 @@ pub async fn bulk_resolve_alerts(
     ),
     responses(
         (status = 200, description = "Alert dismissed", body = SuccessResponse),
-        (status = 404, description = "Alert not found")
+        (status = 404, description = "Alert not found", body = crate::admin::types::AdminApiError)
     )
 )]
 pub async fn dismiss_alert(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(alert_id): Path<String>,
-) -> Result<Json<SuccessResponse>, StatusCode> {
+) -> Result<Json<SuccessResponse>, crate::admin::types::AdminApiErrorResponse> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
     let alert_manager = &state.proxy_engine.get_alert_manager();
 
     if alert_manager.dismiss_alert(&alert_id) {
+        // Audit log the dismissal
+        audit::log_delete("alert", &alert_id, Some(addr));
+
+        tracing::info!(
+            correlation_id = ?correlation_id,
+            alert_id = %alert_id,
+            "dismissed alert"
+        );
+
         Ok(Json(SuccessResponse { success: true, message: Some("Alert dismissed".to_string()) }))
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Err(AdminApiError::alert_not_found(&alert_id))
     }
 }
 
@@ -302,21 +377,28 @@ pub async fn list_rules(State(state): State<AdminState>) -> impl IntoResponse {
     request_body = CreateAlertRuleRequest,
     responses(
         (status = 200, description = "Alert rule created", body = AlertRule),
-        (status = 409, description = "Rule with same ID already exists")
+        (status = 409, description = "Rule with same ID already exists", body = crate::admin::types::AdminApiError)
     )
 )]
 pub async fn create_rule(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(payload): Json<CreateAlertRuleRequest>,
-) -> Result<Json<AlertRule>, StatusCode> {
+) -> Result<Json<AlertRule>, crate::admin::types::AdminApiErrorResponse> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
     let alert_manager = &state.proxy_engine.get_alert_manager();
+
+    // Validate the alert rule
+    validate_alert_rule(&payload.name, payload.cooldown_seconds)
+        .map_err(AdminApiError::validation_error)?;
 
     // Generate a unique ID for the rule
     let rule_id = uuid::Uuid::new_v4().to_string();
 
     let rule = AlertRule::new(
-        rule_id,
-        payload.name,
+        rule_id.clone(),
+        payload.name.clone(),
         payload.condition,
         payload.severity,
         payload.enabled,
@@ -324,9 +406,19 @@ pub async fn create_rule(
     );
 
     if alert_manager.add_rule(rule.clone()) {
+        // Audit log the rule creation
+        audit::log_create("alert_rule", &rule_id, Some(addr));
+
+        tracing::info!(
+            correlation_id = ?correlation_id,
+            rule_id = %rule_id,
+            rule_name = %payload.name,
+            "created alert rule"
+        );
+
         Ok(Json(rule))
     } else {
-        Err(StatusCode::CONFLICT)
+        Err(AdminApiError::rule_conflict())
     }
 }
 
@@ -343,19 +435,26 @@ pub async fn create_rule(
     request_body = UpdateAlertRuleRequest,
     responses(
         (status = 200, description = "Alert rule updated", body = AlertRule),
-        (status = 404, description = "Alert rule not found")
+        (status = 404, description = "Alert rule not found", body = crate::admin::types::AdminApiError)
     )
 )]
 pub async fn update_rule(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(rule_id): Path<String>,
     Json(payload): Json<UpdateAlertRuleRequest>,
-) -> Result<Json<AlertRule>, StatusCode> {
+) -> Result<Json<AlertRule>, crate::admin::types::AdminApiErrorResponse> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
     let alert_manager = &state.proxy_engine.get_alert_manager();
 
+    // Validate the alert rule
+    validate_alert_rule(&payload.name, payload.cooldown_seconds)
+        .map_err(AdminApiError::validation_error)?;
+
     let rule = AlertRule::new(
-        rule_id,
-        payload.name,
+        rule_id.clone(),
+        payload.name.clone(),
         payload.condition,
         payload.severity,
         payload.enabled,
@@ -363,9 +462,19 @@ pub async fn update_rule(
     );
 
     if alert_manager.update_rule(rule.clone()) {
+        // Audit log the rule update
+        audit::log_update("alert_rule", &rule_id, Some(addr), None);
+
+        tracing::info!(
+            correlation_id = ?correlation_id,
+            rule_id = %rule_id,
+            rule_name = %payload.name,
+            "updated alert rule"
+        );
+
         Ok(Json(rule))
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Err(AdminApiError::rule_not_found(&rule_id))
     }
 }
 
@@ -381,19 +490,31 @@ pub async fn update_rule(
     ),
     responses(
         (status = 200, description = "Alert rule deleted", body = SuccessResponse),
-        (status = 404, description = "Alert rule not found")
+        (status = 404, description = "Alert rule not found", body = crate::admin::types::AdminApiError)
     )
 )]
 pub async fn delete_rule(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(rule_id): Path<String>,
-) -> Result<Json<SuccessResponse>, StatusCode> {
+) -> Result<Json<SuccessResponse>, crate::admin::types::AdminApiErrorResponse> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
     let alert_manager = &state.proxy_engine.get_alert_manager();
 
     if alert_manager.remove_rule(&rule_id) {
+        // Audit log the rule deletion
+        audit::log_delete("alert_rule", &rule_id, Some(addr));
+
+        tracing::info!(
+            correlation_id = ?correlation_id,
+            rule_id = %rule_id,
+            "deleted alert rule"
+        );
+
         Ok(Json(SuccessResponse { success: true, message: Some("Rule deleted".to_string()) }))
     } else {
-        Err(StatusCode::NOT_FOUND)
+        Err(AdminApiError::rule_not_found(&rule_id))
     }
 }
 
@@ -409,17 +530,23 @@ pub async fn delete_rule(
     ),
     responses(
         (status = 200, description = "Alert rule toggled", body = ToggleResponse),
-        (status = 404, description = "Alert rule not found")
+        (status = 404, description = "Alert rule not found", body = crate::admin::types::AdminApiError)
     )
 )]
 pub async fn toggle_rule(
     State(state): State<AdminState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(rule_id): Path<String>,
-) -> Result<Json<ToggleResponse>, StatusCode> {
+) -> Result<Json<ToggleResponse>, crate::admin::types::AdminApiErrorResponse> {
     let alert_manager = &state.proxy_engine.get_alert_manager();
 
     alert_manager
         .toggle_rule(&rule_id)
-        .map(|enabled| Json(ToggleResponse { enabled }))
-        .ok_or(StatusCode::NOT_FOUND)
+        .map(|enabled| {
+            // Audit log the rule toggle
+            let details = serde_json::json!({"enabled": enabled});
+            audit::log_update("alert_rule", &rule_id, Some(addr), Some(details));
+            Json(ToggleResponse { enabled })
+        })
+        .ok_or_else(|| AdminApiError::rule_not_found(&rule_id))
 }

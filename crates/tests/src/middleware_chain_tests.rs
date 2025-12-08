@@ -147,6 +147,18 @@ impl ApiKeyRepository for MockAuthRepository {
     ) -> Result<Vec<UsageStats>, AuthError> {
         Ok(vec![])
     }
+
+    async fn update_name(&self, _id: i64, _name: &str) -> Result<(), AuthError> {
+        Ok(())
+    }
+
+    async fn update_allowed_methods(
+        &self,
+        _id: i64,
+        _methods: Option<Vec<String>>,
+    ) -> Result<(), AuthError> {
+        Ok(())
+    }
 }
 
 fn create_api_key(id: i64, name: &str, is_active: bool) -> ApiKey {
@@ -166,6 +178,7 @@ fn create_api_key(id: i64, name: &str, is_active: bool) -> ApiKey {
         last_used_at: None,
         is_active,
         expires_at: None,
+        scope: Default::default(),
     }
 }
 

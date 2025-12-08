@@ -1,5 +1,5 @@
 use super::{
-    api_key::{ApiKey, MethodPermission},
+    api_key::{ApiKey, ApiKeyScope, MethodPermission},
     AuthError,
 };
 use async_trait::async_trait;
@@ -79,6 +79,14 @@ pub trait ApiKeyRepository: Send + Sync {
         api_key_id: i64,
         days: i64,
     ) -> Result<Vec<UsageStats>, AuthError>;
+
+    async fn update_name(&self, id: i64, name: &str) -> Result<(), AuthError>;
+
+    async fn update_allowed_methods(
+        &self,
+        id: i64,
+        methods: Option<Vec<String>>,
+    ) -> Result<(), AuthError>;
 }
 
 pub struct SqliteRepository {
@@ -145,6 +153,10 @@ impl SqliteRepository {
             expires_at: row
                 .get::<Option<NaiveDateTime>, _>("expires_at")
                 .map(|dt| DateTime::from_naive_utc_and_offset(dt, Utc)),
+            scope: row
+                .get::<Option<String>, _>("scope")
+                .and_then(|s| ApiKeyScope::from_str(&s))
+                .unwrap_or_default(),
         })
     }
 }
@@ -183,7 +195,7 @@ impl ApiKeyRepository for SqliteRepository {
                    rate_limit_max_tokens, rate_limit_refill_rate,
                    daily_request_limit, daily_requests_used,
                    quota_reset_at, created_at, updated_at,
-                   last_used_at, is_active, expires_at
+                   last_used_at, is_active, expires_at, scope
             FROM api_keys
             WHERE blind_index = ? AND is_active = 1
             ",
@@ -202,7 +214,7 @@ impl ApiKeyRepository for SqliteRepository {
                    rate_limit_max_tokens, rate_limit_refill_rate,
                    daily_request_limit, daily_requests_used,
                    quota_reset_at, created_at, updated_at,
-                   last_used_at, is_active, expires_at
+                   last_used_at, is_active, expires_at, scope
             FROM api_keys
             WHERE key_hash = ? AND is_active = 1
             ",
@@ -329,8 +341,8 @@ impl ApiKeyRepository for SqliteRepository {
             r"
             INSERT INTO api_keys (key_hash, blind_index, name, description, rate_limit_max_tokens,
                                 rate_limit_refill_rate, daily_request_limit, daily_requests_used,
-                                quota_reset_at, created_at, updated_at, is_active, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                quota_reset_at, created_at, updated_at, is_active, expires_at, scope)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ",
         )
         .bind(&key.key_hash)
@@ -346,6 +358,7 @@ impl ApiKeyRepository for SqliteRepository {
         .bind(key.updated_at.naive_utc())
         .bind(key.is_active)
         .bind(key.expires_at.map(|dt| dt.naive_utc()))
+        .bind(key.scope.as_str())
         .execute(&mut *tx)
         .await?
         .last_insert_rowid();
@@ -374,7 +387,7 @@ impl ApiKeyRepository for SqliteRepository {
                    rate_limit_max_tokens, rate_limit_refill_rate,
                    daily_request_limit, daily_requests_used,
                    quota_reset_at, created_at, updated_at,
-                   last_used_at, is_active, expires_at
+                   last_used_at, is_active, expires_at, scope
             FROM api_keys
             ORDER BY created_at DESC
             ",
@@ -463,6 +476,75 @@ impl ApiKeyRepository for SqliteRepository {
             })
             .collect()
     }
+
+    async fn update_name(&self, id: i64, name: &str) -> Result<(), AuthError> {
+        sqlx::query(
+            r"
+            UPDATE api_keys
+            SET name = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            ",
+        )
+        .bind(name)
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+
+        tracing::info!(key_id = id, new_name = name, "api key name updated");
+        Ok(())
+    }
+
+    async fn update_allowed_methods(
+        &self,
+        id: i64,
+        methods: Option<Vec<String>>,
+    ) -> Result<(), AuthError> {
+        let mut tx = self.pool.begin().await?;
+
+        // Delete existing method permissions
+        sqlx::query(
+            r"
+            DELETE FROM api_key_methods
+            WHERE api_key_id = ?
+            ",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+        // Insert new method permissions if provided
+        if let Some(method_list) = methods {
+            for method in method_list {
+                sqlx::query(
+                    r"
+                    INSERT INTO api_key_methods (api_key_id, method_name, max_requests_per_day)
+                    VALUES (?, ?, 1000)
+                    ",
+                )
+                .bind(id)
+                .bind(method)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+
+        // Update the updated_at timestamp
+        sqlx::query(
+            r"
+            UPDATE api_keys
+            SET updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            ",
+        )
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+
+        tracing::info!(key_id = id, "api key allowed methods updated");
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -488,7 +570,8 @@ mod tests {
             updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             last_used_at TIMESTAMP,
             is_active BOOLEAN NOT NULL DEFAULT 1,
-            expires_at TIMESTAMP
+            expires_at TIMESTAMP,
+            scope TEXT NOT NULL DEFAULT 'rpc'
         );
 
         CREATE TABLE api_key_methods (
@@ -540,6 +623,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
+            scope: Default::default(),
         };
 
         (api_key, plaintext_key)
@@ -1113,6 +1197,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
+            scope: Default::default(),
         };
 
         let result = repo.create(api_key, vec![]).await;
@@ -1152,6 +1237,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: Some(now + Duration::days(30)),
+            scope: Default::default(),
         };
 
         repo.create(api_key, vec![]).await.expect("Create should succeed");

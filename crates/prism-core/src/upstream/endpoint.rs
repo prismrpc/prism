@@ -1,7 +1,7 @@
 use std::{
     collections::VecDeque,
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::Duration,
@@ -38,6 +38,10 @@ pub struct HealthHistoryEntry {
 
 const HEALTH_HISTORY_SIZE: usize = 100;
 
+/// Time-to-live for cached health status in milliseconds.
+/// Health checks that occur within this window will use the cached value.
+const HEALTH_CACHE_TTL_MS: u64 = 100;
+
 /// Represents an upstream RPC endpoint with health tracking, circuit breaker protection,
 /// and WebSocket support for real-time chain updates.
 ///
@@ -57,6 +61,10 @@ pub struct UpstreamEndpoint {
     health_check_result: Arc<RwLock<watch::Sender<Option<HealthCheckResult>>>>,
     health_check_receiver: watch::Receiver<Option<HealthCheckResult>>,
     health_history: Arc<RwLock<VecDeque<HealthHistoryEntry>>>,
+    /// Cached health status to avoid lock contention on every request
+    cached_is_healthy: AtomicBool,
+    /// Timestamp (ms since epoch) when cached health was last updated
+    health_cache_time: AtomicU64,
 }
 
 impl UpstreamEndpoint {
@@ -85,6 +93,8 @@ impl UpstreamEndpoint {
             health_check_result: Arc::new(RwLock::new(health_check_tx)),
             health_check_receiver: health_check_rx,
             health_history: Arc::new(RwLock::new(VecDeque::with_capacity(HEALTH_HISTORY_SIZE))),
+            cached_is_healthy: AtomicBool::new(false),
+            health_cache_time: AtomicU64::new(0),
         }
     }
 
@@ -227,18 +237,43 @@ impl UpstreamEndpoint {
 
     /// Checks if this upstream is currently healthy and available for requests.
     ///
+    /// Uses a 100ms cache to reduce lock contention on high-throughput workloads.
     /// Returns `true` only if both the health status is good and the circuit breaker
     /// is closed (allowing requests through).
     pub async fn is_healthy(&self) -> bool {
+        // Fast path: check cache first (lock-free)
+        let cache_time = self.health_cache_time.load(Ordering::Relaxed);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+
+        if now_ms.saturating_sub(cache_time) < HEALTH_CACHE_TTL_MS {
+            return self.cached_is_healthy.load(Ordering::Relaxed);
+        }
+
+        // Slow path: acquire locks and update cache
         let health = self.health.read().await;
         let circuit_breaker_allows = self.circuit_breaker.can_execute().await;
+        let is_healthy = health.is_healthy && circuit_breaker_allows;
 
-        health.is_healthy && circuit_breaker_allows
+        // Update cache (race is benign - worst case is redundant computation)
+        self.cached_is_healthy.store(is_healthy, Ordering::Relaxed);
+        self.health_cache_time.store(now_ms, Ordering::Relaxed);
+
+        is_healthy
     }
 
     /// Returns the current health status including response time and error count.
     pub async fn get_health(&self) -> UpstreamHealth {
         self.health.read().await.clone()
+    }
+
+    /// Invalidates the health cache, forcing the next `is_healthy()` call to recompute.
+    /// This is useful after external state changes (like circuit breaker state changes)
+    /// that affect health but don't go through `update_health()`.
+    pub fn invalidate_health_cache(&self) {
+        self.health_cache_time.store(0, Ordering::Relaxed);
     }
 
     /// Returns a reference to the upstream configuration.
@@ -567,6 +602,9 @@ impl UpstreamEndpoint {
                 );
             }
         }
+
+        // Invalidate health cache so next is_healthy() call will recompute
+        self.health_cache_time.store(0, Ordering::Relaxed);
     }
 }
 
@@ -610,11 +648,13 @@ mod tests {
 
         endpoint.circuit_breaker().on_failure().await;
         endpoint.circuit_breaker().on_failure().await;
+        endpoint.invalidate_health_cache(); // Cache invalidation needed after direct circuit breaker manipulation
 
         assert_eq!(endpoint.get_circuit_breaker_state().await, CircuitBreakerState::Open);
         assert!(!endpoint.is_healthy().await);
 
         endpoint.circuit_breaker().on_success().await;
+        endpoint.invalidate_health_cache(); // Cache invalidation needed after direct circuit breaker manipulation
         assert_eq!(endpoint.get_circuit_breaker_state().await, CircuitBreakerState::Closed);
         assert!(endpoint.is_healthy().await);
     }
@@ -636,15 +676,18 @@ mod tests {
         assert_eq!(endpoint.get_circuit_breaker_failure_count().await, 0);
 
         endpoint.circuit_breaker().on_failure().await;
+        endpoint.invalidate_health_cache(); // Cache invalidation needed after direct circuit breaker manipulation
         assert_eq!(endpoint.get_circuit_breaker_failure_count().await, 1);
         assert!(endpoint.is_healthy().await);
 
         endpoint.circuit_breaker().on_failure().await;
+        endpoint.invalidate_health_cache(); // Cache invalidation needed after direct circuit breaker manipulation
         assert_eq!(endpoint.get_circuit_breaker_failure_count().await, 2);
         assert_eq!(endpoint.get_circuit_breaker_state().await, CircuitBreakerState::Open);
         assert!(!endpoint.is_healthy().await);
 
         endpoint.circuit_breaker().on_success().await;
+        endpoint.invalidate_health_cache(); // Cache invalidation needed after direct circuit breaker manipulation
         assert_eq!(endpoint.get_circuit_breaker_state().await, CircuitBreakerState::Closed);
         assert!(endpoint.is_healthy().await);
         assert_eq!(endpoint.get_circuit_breaker_failure_count().await, 0);

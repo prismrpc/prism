@@ -3247,6 +3247,7 @@ dependencies = [
  "subtle",
  "thiserror 2.0.16",
  "tokio",
+ "toml",
  "tower",
  "tower-http",
  "tracing",
@@ -3950,6 +3951,7 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "tracing",
+ "uuid",
 ]
 
 [[package]]

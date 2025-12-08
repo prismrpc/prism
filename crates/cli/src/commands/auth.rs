@@ -162,6 +162,7 @@ async fn handle_create_key(
         last_used_at: None,
         is_active: true,
         expires_at,
+        scope: Default::default(),
     };
 
     let allowed_methods = params.methods.map_or_else(

@@ -2,9 +2,16 @@
 
 #![allow(clippy::missing_errors_doc)]
 
-use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
+use axum::{
+    extract::{ConnectInfo, State},
+    http::StatusCode,
+    response::IntoResponse,
+    Json,
+};
+use std::net::SocketAddr;
 
 use crate::admin::{
+    audit,
     types::{
         Capabilities, HealthCheck, ServerSettings, SystemHealth, SystemInfo, SystemStatus,
         UpdateServerSettingsRequest, UpdateSettingsResponse,
@@ -162,6 +169,7 @@ pub async fn get_settings(State(state): State<AdminState>) -> impl IntoResponse 
 )]
 pub async fn update_settings(
     State(_state): State<AdminState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(request): Json<UpdateServerSettingsRequest>,
 ) -> Result<Json<UpdateSettingsResponse>, (StatusCode, String)> {
     // Validate the request
@@ -190,6 +198,14 @@ pub async fn update_settings(
         request.max_concurrent_requests.is_some() || request.request_timeout.is_some();
 
     if has_changes {
+        // Audit log the settings update attempt
+        let details = serde_json::json!({
+            "max_concurrent_requests": request.max_concurrent_requests,
+            "request_timeout": request.request_timeout,
+            "requires_restart": true
+        });
+        audit::log_update("server_settings", "global", Some(addr), Some(details));
+
         tracing::info!(
             max_concurrent_requests = ?request.max_concurrent_requests,
             request_timeout = ?request.request_timeout,

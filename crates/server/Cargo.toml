@@ -42,3 +42,4 @@ thiserror = { workspace = true }
 lru = "0.12"
 subtle = "2.5"
 dashmap = { workspace = true }
+toml = { workspace = true }

@@ -1004,6 +1004,7 @@ mod tests {
 
         failing_upstream.circuit_breaker().on_failure().await;
         failing_upstream.circuit_breaker().on_failure().await;
+        failing_upstream.invalidate_health_cache(); // Cache invalidation needed after direct circuit breaker manipulation
 
         let healthy_upstreams = balancer.get_healthy_upstreams().await;
         assert_eq!(healthy_upstreams.len(), 1);

@@ -200,6 +200,52 @@ cargo run --bin cli -- auth revoke --name "production-api"
 >  By default the CLI uses `sqlite://db/auth.db`. You can change this with the `--database` flag or with the `DATABASE_URL` environment variable.
 
 
+## Admin API
+
+Prism includes a built-in Admin API for monitoring and management, running on a separate HTTP server (default port: 3031).
+
+### Features
+
+- **System Status**: Health checks, version info, uptime
+- **Upstream Management**: CRUD operations, health checks, circuit breaker control
+- **Cache Management**: Statistics, memory allocation, cache clearing
+- **Metrics**: KPIs, latency percentiles, request volume, error distribution
+- **Alerts**: Alert management and rule configuration
+- **API Keys**: Key management (when authentication is enabled)
+- **Logs**: Log querying and export
+
+### Quick Start
+
+```bash
+# Start Prism (Admin API runs on port 3031 by default)
+cargo run --release
+
+# Access Swagger UI
+open http://localhost:3031/admin/swagger-ui
+
+# Check system status
+curl http://localhost:3031/admin/system/status
+```
+
+### Authentication
+
+For production, configure an admin token in your config file or environment:
+
+```toml
+[admin]
+admin_token = "your-secure-token-here"
+```
+
+Then include the token in requests:
+
+```bash
+curl -H "X-Admin-Token: your-secure-token-here" \
+  http://localhost:3031/admin/system/status
+```
+
+See the [Swagger UI](http://localhost:3031/admin/swagger-ui) for complete API documentation.
+
+
 ## E2E Testing with Devnet
 
 Prism ships with an end to end test environment built on a local Geth network.

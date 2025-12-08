@@ -569,3 +569,183 @@ pub struct DailyUsage {
     pub date: String,
     pub requests: u64,
 }
+
+// --- Metrics Data Source Types ---
+
+/// Indicates where metrics data came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DataSource {
+    /// Data from Prometheus time-series database
+    Prometheus,
+    /// Data from in-memory metrics collector
+    InMemory,
+    /// Fallback/default data (Prometheus unavailable, no in-memory data)
+    Fallback,
+}
+
+/// Wrapper for metrics responses that indicates data source.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MetricsDataResponse<T> {
+    /// The actual metrics data
+    pub data: T,
+    /// Source of the data
+    pub source: DataSource,
+    /// Warning message if data is degraded
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+impl<T> MetricsDataResponse<T> {
+    /// Create response with data from Prometheus.
+    pub fn from_prometheus(data: T) -> Self {
+        Self { data, source: DataSource::Prometheus, warning: None }
+    }
+
+    /// Create response with data from in-memory metrics.
+    pub fn from_in_memory(data: T) -> Self {
+        Self { data, source: DataSource::InMemory, warning: None }
+    }
+
+    /// Create response with fallback data and warning.
+    pub fn fallback(data: T, warning: impl Into<String>) -> Self {
+        Self { data, source: DataSource::Fallback, warning: Some(warning.into()) }
+    }
+}
+
+// --- Error Types ---
+
+/// Unified error type for Admin API responses.
+///
+/// Provides consistent error handling across all admin endpoints with
+/// machine-readable error codes and optional additional context.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AdminApiError {
+    /// Machine-readable error code (e.g., "UPSTREAM_NOT_FOUND").
+    pub code: String,
+    /// Human-readable error message.
+    pub message: String,
+    /// Optional additional details for debugging or context.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<serde_json::Value>,
+}
+
+impl AdminApiError {
+    /// Creates a new error with the given code and message.
+    #[must_use]
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self { code: code.into(), message: message.into(), details: None }
+    }
+
+    /// Creates a bad request error (400).
+    #[must_use]
+    pub fn bad_request(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(code, message)
+    }
+
+    /// Creates a not found error (404).
+    #[must_use]
+    pub fn not_found(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(code, message)
+    }
+
+    /// Creates a conflict error (409).
+    #[must_use]
+    pub fn conflict(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(code, message)
+    }
+
+    /// Creates an internal server error (500).
+    #[must_use]
+    pub fn internal(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self::new(code, message)
+    }
+
+    /// Adds optional details to the error.
+    #[must_use]
+    pub fn with_details(mut self, details: serde_json::Value) -> Self {
+        self.details = Some(details);
+        self
+    }
+
+    // --- Common error constructors ---
+
+    /// Creates an "upstream not found" error response.
+    #[must_use]
+    pub fn upstream_not_found(id: &str) -> AdminApiErrorResponse {
+        AdminApiErrorResponse {
+            status: axum::http::StatusCode::NOT_FOUND,
+            error: Self::not_found(
+                "UPSTREAM_NOT_FOUND",
+                format!("Upstream with ID '{id}' not found"),
+            ),
+        }
+    }
+
+    /// Creates an "invalid upstream ID" error response.
+    #[must_use]
+    pub fn invalid_upstream_id() -> AdminApiErrorResponse {
+        AdminApiErrorResponse {
+            status: axum::http::StatusCode::BAD_REQUEST,
+            error: Self::bad_request("INVALID_UPSTREAM_ID", "Invalid upstream ID format"),
+        }
+    }
+
+    /// Creates a validation error response.
+    #[must_use]
+    pub fn validation_error(message: impl Into<String>) -> AdminApiErrorResponse {
+        AdminApiErrorResponse {
+            status: axum::http::StatusCode::BAD_REQUEST,
+            error: Self::bad_request("VALIDATION_ERROR", message),
+        }
+    }
+
+    /// Creates an "alert not found" error response.
+    #[must_use]
+    pub fn alert_not_found(id: &str) -> AdminApiErrorResponse {
+        AdminApiErrorResponse {
+            status: axum::http::StatusCode::NOT_FOUND,
+            error: Self::not_found("ALERT_NOT_FOUND", format!("Alert with ID '{id}' not found")),
+        }
+    }
+
+    /// Creates an "alert rule not found" error response.
+    #[must_use]
+    pub fn rule_not_found(id: &str) -> AdminApiErrorResponse {
+        AdminApiErrorResponse {
+            status: axum::http::StatusCode::NOT_FOUND,
+            error: Self::not_found(
+                "RULE_NOT_FOUND",
+                format!("Alert rule with ID '{id}' not found"),
+            ),
+        }
+    }
+
+    /// Creates a "rule already exists" conflict error response.
+    #[must_use]
+    pub fn rule_conflict() -> AdminApiErrorResponse {
+        AdminApiErrorResponse {
+            status: axum::http::StatusCode::CONFLICT,
+            error: Self::conflict("RULE_CONFLICT", "Alert rule with the same ID already exists"),
+        }
+    }
+}
+
+/// Response wrapper that includes status code for proper HTTP response.
+///
+/// Implements `IntoResponse` to convert errors into Axum responses.
+#[derive(Debug)]
+pub struct AdminApiErrorResponse {
+    /// HTTP status code.
+    pub status: axum::http::StatusCode,
+    /// Error details.
+    pub error: AdminApiError,
+}
+
+impl axum::response::IntoResponse for AdminApiErrorResponse {
+    fn into_response(self) -> axum::response::Response {
+        (self.status, axum::Json(self.error)).into_response()
+    }
+}

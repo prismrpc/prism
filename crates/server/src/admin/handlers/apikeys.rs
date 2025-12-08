@@ -4,6 +4,7 @@
 #![allow(clippy::cast_sign_loss)]
 
 use crate::admin::{
+    audit,
     types::{
         ApiKeyCreatedResponse, ApiKeyResponse, ApiKeyUsageResponse, CreateApiKeyRequest,
         DailyUsage, MethodUsage, TimeRangeQuery, UpdateApiKeyRequest,
@@ -11,7 +12,7 @@ use crate::admin::{
     AdminState,
 };
 use axum::{
-    extract::{Path, Query, State},
+    extract::{ConnectInfo, Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -21,7 +22,12 @@ use prism_core::auth::{
     api_key::{ApiKey, MethodPermission},
     repository::ApiKeyRepository,
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, net::SocketAddr};
+
+/// Maximum length for API key names.
+const MAX_API_KEY_NAME_LENGTH: usize = 128;
+/// Minimum length for API key names.
+const MIN_API_KEY_NAME_LENGTH: usize = 1;
 
 /// Error type for API key handler operations.
 #[derive(Debug)]
@@ -30,6 +36,7 @@ pub enum ApiKeyError {
     NotFound,
     DatabaseError(String),
     KeyGenerationError(String),
+    ValidationError(String),
 }
 
 impl IntoResponse for ApiKeyError {
@@ -43,8 +50,41 @@ impl IntoResponse for ApiKeyError {
             ApiKeyError::DatabaseError(msg) | ApiKeyError::KeyGenerationError(msg) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, msg).into_response()
             }
+            ApiKeyError::ValidationError(msg) => (StatusCode::BAD_REQUEST, msg).into_response(),
         }
     }
+}
+
+/// Validates an API key name.
+///
+/// # Errors
+///
+/// Returns an error if:
+/// - The name is empty
+/// - The name exceeds the maximum length
+/// - The name contains invalid characters
+fn validate_api_key_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("API key name cannot be empty".to_string());
+    }
+    if name.len() < MIN_API_KEY_NAME_LENGTH {
+        return Err(format!(
+            "API key name too short. Minimum length is {MIN_API_KEY_NAME_LENGTH} character(s)."
+        ));
+    }
+    if name.len() > MAX_API_KEY_NAME_LENGTH {
+        return Err(format!(
+            "API key name too long. Maximum length is {MAX_API_KEY_NAME_LENGTH} characters."
+        ));
+    }
+    // Allow alphanumeric, spaces, dashes, underscores
+    if !name.chars().all(|c| c.is_alphanumeric() || c == ' ' || c == '-' || c == '_') {
+        return Err(
+            "API key name contains invalid characters. Only alphanumeric, spaces, dashes, and underscores are allowed."
+                .to_string(),
+        );
+    }
+    Ok(())
 }
 
 /// Converts an `ApiKey` and its methods into an `ApiKeyResponse`.
@@ -145,9 +185,13 @@ pub async fn get_api_key(
 )]
 pub async fn create_api_key(
     State(state): State<AdminState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(request): Json<CreateApiKeyRequest>,
 ) -> Result<Json<ApiKeyCreatedResponse>, ApiKeyError> {
     let repo = state.api_key_repo.as_ref().ok_or(ApiKeyError::AuthDisabled)?;
+
+    // Validate API key name
+    validate_api_key_name(&request.name).map_err(ApiKeyError::ValidationError)?;
 
     // Generate a new API key
     let plaintext_key =
@@ -179,6 +223,7 @@ pub async fn create_api_key(
         last_used_at: None,
         is_active: true,
         expires_at: None,
+        scope: Default::default(),
     };
 
     // Get the methods to allow (default to empty if not specified)
@@ -195,6 +240,9 @@ pub async fn create_api_key(
         .await
         .map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?
         .ok_or_else(|| ApiKeyError::DatabaseError("Failed to retrieve created key".to_string()))?;
+
+    // Audit log the API key creation (don't log the actual key)
+    audit::log_create("api_key", &created_key.id.to_string(), Some(addr));
 
     Ok(Json(ApiKeyCreatedResponse {
         id: created_key.id,
@@ -221,41 +269,63 @@ pub async fn create_api_key(
 )]
 pub async fn update_api_key(
     State(state): State<AdminState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<i64>,
     Json(request): Json<UpdateApiKeyRequest>,
 ) -> Result<Json<ApiKeyResponse>, ApiKeyError> {
     let repo = state.api_key_repo.as_ref().ok_or(ApiKeyError::AuthDisabled)?;
 
+    // Validate API key name if provided
+    if let Some(ref name) = request.name {
+        validate_api_key_name(name).map_err(ApiKeyError::ValidationError)?;
+    }
+
     // Find the key by ID
     let keys = repo.list_all().await.map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?;
 
-    let key = keys.iter().find(|k| k.id == id).ok_or(ApiKeyError::NotFound)?;
+    let _key = keys.iter().find(|k| k.id == id).ok_or(ApiKeyError::NotFound)?;
 
-    // Note: The current repository doesn't have update methods for name or methods.
-    // For now, we'll return an error indicating this is not yet implemented.
-    // In a full implementation, we would need to add update_name and update_methods
-    // methods to the ApiKeyRepository trait.
+    // Update name if provided
+    if let Some(name) = &request.name {
+        repo.update_name(id, name)
+            .await
+            .map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?;
+    }
 
-    // For the allowed_methods update, we would need to:
-    // 1. Delete all existing method permissions
-    // 2. Insert new method permissions
-    // This requires transaction support and new repository methods.
+    // Update allowed methods if provided
+    if let Some(methods) = &request.allowed_methods {
+        repo.update_allowed_methods(id, Some(methods.clone()))
+            .await
+            .map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?;
+    }
 
-    // Since the repository doesn't support these operations yet,
-    // we'll return the current state
+    // Audit log the update
+    let mut changes = serde_json::Map::new();
+    if let Some(name) = &request.name {
+        changes.insert("name".to_string(), serde_json::json!(name));
+    }
+    if let Some(methods) = &request.allowed_methods {
+        changes.insert("allowed_methods".to_string(), serde_json::json!(methods));
+    }
+    if !changes.is_empty() {
+        audit::log_update(
+            "api_key",
+            &id.to_string(),
+            Some(addr),
+            Some(serde_json::Value::Object(changes)),
+        );
+    }
+
+    // Fetch the updated key
+    let keys = repo.list_all().await.map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?;
+    let updated_key = keys.iter().find(|k| k.id == id).ok_or(ApiKeyError::NotFound)?;
+
     let methods = repo
-        .get_methods(key.id)
+        .get_methods(updated_key.id)
         .await
         .map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?;
 
-    // TODO: Implement actual updates when repository supports it
-    if request.name.is_some() || request.allowed_methods.is_some() {
-        return Err(ApiKeyError::DatabaseError(
-            "Update operations not yet implemented in repository".to_string(),
-        ));
-    }
-
-    Ok(Json(to_api_key_response(key, &methods)))
+    Ok(Json(to_api_key_response(updated_key, &methods)))
 }
 
 /// DELETE /admin/apikeys/:id - Revoke an API key.
@@ -274,6 +344,7 @@ pub async fn update_api_key(
 )]
 pub async fn delete_api_key(
     State(state): State<AdminState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiKeyError> {
     let repo = state.api_key_repo.as_ref().ok_or(ApiKeyError::AuthDisabled)?;
@@ -287,6 +358,9 @@ pub async fn delete_api_key(
     repo.revoke(&key.name)
         .await
         .map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?;
+
+    // Audit log the API key deletion
+    audit::log_delete("api_key", &id.to_string(), Some(addr));
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -307,10 +381,30 @@ pub async fn delete_api_key(
 )]
 pub async fn revoke_api_key(
     State(state): State<AdminState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, ApiKeyError> {
-    // Delegate to delete_api_key
-    delete_api_key(State(state), Path(id)).await
+    let repo = state.api_key_repo.as_ref().ok_or(ApiKeyError::AuthDisabled)?;
+
+    // Find the key by ID to get its name
+    let keys = repo.list_all().await.map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?;
+
+    let key = keys.iter().find(|k| k.id == id).ok_or(ApiKeyError::NotFound)?;
+
+    // Revoke the key by name
+    repo.revoke(&key.name)
+        .await
+        .map_err(|e| ApiKeyError::DatabaseError(e.to_string()))?;
+
+    // Audit log the API key revocation
+    audit::log_update(
+        "api_key",
+        &id.to_string(),
+        Some(addr),
+        Some(serde_json::json!({"revoked": true})),
+    );
+
+    Ok(StatusCode::OK)
 }
 
 /// GET /admin/apikeys/:id/usage - Get usage statistics for an API key.

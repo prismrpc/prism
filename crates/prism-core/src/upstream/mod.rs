@@ -54,6 +54,7 @@
 pub mod builder;
 pub mod circuit_breaker;
 pub mod consensus;
+pub mod dynamic_registry;
 pub mod endpoint;
 pub mod errors;
 pub mod health;
@@ -64,7 +65,6 @@ pub mod load_balancer;
 pub mod manager;
 pub mod misbehavior;
 pub mod router;
-pub mod runtime_registry;
 pub mod scoring;
 pub mod websocket;
 
@@ -73,6 +73,9 @@ pub use circuit_breaker::{CircuitBreaker, CircuitBreakerState};
 pub use consensus::{
     ConsensusConfig, ConsensusEngine, ConsensusMetadata, ConsensusResult, DisputeBehavior,
     FailureBehavior, LowParticipantsBehavior, ResponseGroup, SelectionMethod,
+};
+pub use dynamic_registry::{
+    DynamicUpstreamConfig, DynamicUpstreamRegistry, DynamicUpstreamUpdate, UpstreamSource,
 };
 pub use endpoint::UpstreamEndpoint;
 pub use errors::{RpcErrorCategory, UpstreamError};
@@ -86,8 +89,5 @@ pub use manager::{
 };
 pub use misbehavior::{MisbehaviorConfig, MisbehaviorStats, MisbehaviorTracker};
 pub use router::{RoutingContext, SmartRouter};
-pub use runtime_registry::{
-    RuntimeUpstreamConfig, RuntimeUpstreamRegistry, RuntimeUpstreamUpdate, UpstreamSource,
-};
 pub use scoring::{ScoringConfig, ScoringEngine, ScoringWeights, UpstreamMetrics, UpstreamScore};
 pub use websocket::{WebSocketFailureTracker, WebSocketHandler};

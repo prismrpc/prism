@@ -19,7 +19,10 @@ enabled = true
 bind_address = "127.0.0.1"  # Default: localhost only (for security)
 port = 3031                 # Default: 3031
 prometheus_url = "http://localhost:9090"  # Prometheus server for historical metrics
-admin_token = "dev-admin-token-change-in-production"  # Set to enable admin authentication
+# SECURITY: Admin token is intentionally not set here.
+# In development, use PRISM_ADMIN__ADMIN_TOKEN env var or leave unset for no auth.
+# In production, ALWAYS set via environment variable: PRISM_ADMIN__ADMIN_TOKEN=your-secure-token
+# admin_token = ""
 rate_limit_max_tokens = 100  # Burst capacity: 100 requests
 rate_limit_refill_rate = 10  # Sustained rate: 10 requests/sec
 
@@ -83,13 +86,17 @@ safety_depth = 12
 
 [cache.manager_config.block_cache]
 hot_window_size = 200
-max_headers = 10000
-max_bodies = 10000
+# Memory estimation: headers ~500 bytes each, bodies ~2KB each
+# Target: ~20MB total (10MB headers + 10MB bodies)
+max_headers = 20000    # 20000 × 500 bytes ≈ 10 MB
+max_bodies = 5000      # 5000 × 2048 bytes ≈ 10 MB
 safety_depth = 12
 
 [cache.manager_config.transaction_cache]
-max_transactions = 50000
-max_receipts = 50000
+# Memory estimation: transactions ~300 bytes each, receipts ~200 bytes each
+# Target: ~8MB total (4MB transactions + 4MB receipts)
+max_transactions = 40000   # 40000 × 300 bytes ≈ 12 MB
+max_receipts = 40000       # 40000 × 200 bytes ≈ 8 MB
 safety_depth = 12
 
 [cache.manager_config.reorg_manager]

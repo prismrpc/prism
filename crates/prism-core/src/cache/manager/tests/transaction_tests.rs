@@ -42,7 +42,11 @@ async fn test_warm_transactions() {
         from: [0; 20],
         to: Some([1; 20]),
         value: [0; 32],
-        gas_price: [0; 32],
+        tx_type: Some(0), // Legacy transaction
+        gas_price: Some([0; 32]),
+        max_fee_per_gas: None,
+        max_priority_fee_per_gas: None,
+        max_fee_per_blob_gas: None,
         gas_limit: 21000,
         nonce: 0,
         data: vec![],

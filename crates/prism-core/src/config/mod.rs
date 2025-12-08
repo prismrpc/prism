@@ -45,6 +45,7 @@ use crate::{
 use config::{Config, ConfigError, Environment, File};
 use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::Arc, time::Duration};
+use tracing::warn;
 
 /// HTTP server configuration settings.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -615,6 +616,29 @@ impl AppConfig {
 
         if !["json", "pretty"].contains(&self.logging.format.as_str()) {
             return Err("Logging format must be 'json' or 'pretty'".to_string());
+        }
+
+        // Security warning: Admin API enabled without authentication
+        if self.admin.enabled && self.admin.admin_token.is_none() {
+            if self.environment != "development" && self.environment != "test" {
+                warn!(
+                    "SECURITY WARNING: Admin API is enabled without authentication! \
+                     Set PRISM_ADMIN__ADMIN_TOKEN environment variable to secure the admin API."
+                );
+            }
+        }
+
+        // Validate admin token is not empty if set
+        if let Some(ref token) = self.admin.admin_token {
+            if token.trim().is_empty() {
+                return Err("Admin token cannot be empty".to_string());
+            }
+            if token.len() < 16 {
+                warn!(
+                    "Admin token is shorter than recommended minimum of 16 characters. \
+                     Consider using a longer, more secure token."
+                );
+            }
         }
 
         Ok(())

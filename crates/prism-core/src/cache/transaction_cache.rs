@@ -364,9 +364,27 @@ impl TransactionCache {
             return;
         }
 
-        // Collect and sort block numbers (oldest first)
+        // Collect block numbers - use partial sorting for efficiency
+        // Estimate: we need approximately to_evict / avg_txs_per_block blocks
+        // Use a minimum of 10 blocks as a starting estimate
         let mut blocks: Vec<u64> = self.block_transactions.iter().map(|e| *e.key()).collect();
-        blocks.sort_unstable();
+
+        if blocks.is_empty() {
+            return;
+        }
+
+        // Optimization: use select_nth_unstable for O(n) partial sorting
+        // instead of full O(n log n) sort when we only need oldest blocks
+        let estimated_blocks_needed = (to_evict / 10).max(10).min(blocks.len());
+        if estimated_blocks_needed < blocks.len() {
+            // Partition so that blocks[0..k] contains the k smallest block numbers
+            blocks.select_nth_unstable(estimated_blocks_needed.saturating_sub(1));
+            // Only sort the subset we'll actually use
+            blocks[..estimated_blocks_needed].sort_unstable();
+        } else {
+            // If we might need all blocks, just do a full sort
+            blocks.sort_unstable();
+        }
 
         let mut evicted = 0;
         for block in blocks {
@@ -442,7 +460,11 @@ mod tests {
             from: [3u8; 20],
             to: Some([4u8; 20]),
             value: [5u8; 32],
-            gas_price: [6u8; 32],
+            tx_type: Some(0), // Legacy transaction
+            gas_price: Some([6u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![1, 2, 3],
@@ -504,7 +526,11 @@ mod tests {
             from: [3u8; 20],
             to: Some([4u8; 20]),
             value: [5u8; 32],
-            gas_price: [6u8; 32],
+            tx_type: Some(0), // Legacy transaction
+            gas_price: Some([6u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],
@@ -556,7 +582,11 @@ mod tests {
             from: [3u8; 20],
             to: Some([4u8; 20]),
             value: [5u8; 32],
-            gas_price: [6u8; 32],
+            tx_type: Some(0), // Legacy transaction
+            gas_price: Some([6u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],
@@ -587,7 +617,11 @@ mod tests {
             from: [1u8; 20],
             to: Some([2u8; 20]),
             value: [0u8; 32],
-            gas_price: [1u8; 32],
+            tx_type: Some(0), // Legacy transaction
+            gas_price: Some([1u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],

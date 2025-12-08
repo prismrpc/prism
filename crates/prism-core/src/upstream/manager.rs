@@ -1,8 +1,8 @@
 use super::{
     circuit_breaker::CircuitBreakerState,
     consensus::{ConsensusConfig, ConsensusEngine},
+    dynamic_registry::{DynamicUpstreamConfig, DynamicUpstreamRegistry, DynamicUpstreamUpdate},
     router::{RoutingContext, SmartRouter},
-    runtime_registry::{RuntimeUpstreamConfig, RuntimeUpstreamRegistry, RuntimeUpstreamUpdate},
     scoring::{ScoringConfig, ScoringEngine, UpstreamScore},
     HedgeConfig, HedgeExecutor, LoadBalancer, UpstreamEndpoint, UpstreamError,
 };
@@ -51,7 +51,7 @@ pub struct UpstreamManager {
     consensus_engine: Arc<ConsensusEngine>,
     routing_context: Arc<RoutingContext>,
     router: Arc<SmartRouter>,
-    runtime_registry: Arc<RuntimeUpstreamRegistry>,
+    dynamic_registry: Arc<DynamicUpstreamRegistry>,
 }
 
 /// Configuration for the `UpstreamManager`.
@@ -124,7 +124,7 @@ impl UpstreamManager {
         consensus_engine: Arc<ConsensusEngine>,
         routing_context: Arc<RoutingContext>,
         router: Arc<SmartRouter>,
-        runtime_registry: Arc<RuntimeUpstreamRegistry>,
+        dynamic_registry: Arc<DynamicUpstreamRegistry>,
     ) -> Self {
         Self {
             load_balancer,
@@ -135,7 +135,7 @@ impl UpstreamManager {
             consensus_engine,
             routing_context,
             router,
-            runtime_registry,
+            dynamic_registry,
         }
     }
 
@@ -475,33 +475,33 @@ impl UpstreamManager {
         self.consensus_engine.is_enabled().await
     }
 
-    /// Returns a reference to the runtime upstream registry.
+    /// Returns a reference to the dynamic upstream registry.
     #[must_use]
-    pub fn get_runtime_registry(&self) -> Arc<RuntimeUpstreamRegistry> {
-        self.runtime_registry.clone()
+    pub fn get_dynamic_registry(&self) -> Arc<DynamicUpstreamRegistry> {
+        self.dynamic_registry.clone()
     }
 
-    /// Adds a runtime upstream and registers it in the runtime registry.
+    /// Adds a dynamic upstream and registers it in the dynamic registry.
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The upstream name conflicts with an existing upstream
     /// - Validation fails (invalid URL, weight out of range, etc.)
-    /// - Registration in the runtime registry fails
-    pub fn add_runtime_upstream(
+    /// - Registration in the dynamic registry fails
+    pub fn add_dynamic_upstream(
         &self,
         request: CreateUpstreamRequest,
-    ) -> Result<RuntimeUpstreamConfig, UpstreamError> {
+    ) -> Result<DynamicUpstreamConfig, UpstreamError> {
         // Validate request
         validate_upstream_request(&request)?;
 
         // Generate ID
         let id = uuid::Uuid::new_v4().to_string();
 
-        // Create runtime upstream config
+        // Create dynamic upstream config
         let now = chrono::Utc::now().to_rfc3339();
-        let runtime_config = RuntimeUpstreamConfig {
+        let dynamic_config = DynamicUpstreamConfig {
             id: id.clone(),
             name: request.name.clone(),
             url: request.url.clone(),
@@ -514,9 +514,9 @@ impl UpstreamManager {
             updated_at: now,
         };
 
-        // Register in runtime registry
-        self.runtime_registry
-            .add(&runtime_config)
+        // Register in dynamic registry
+        self.dynamic_registry
+            .add(&dynamic_config)
             .map_err(UpstreamError::InvalidRequest)?;
 
         // Create UpstreamConfig for load balancer
@@ -535,11 +535,11 @@ impl UpstreamManager {
         // Add to load balancer
         self.add_upstream(upstream_config);
 
-        info!(id = %id, name = %runtime_config.name, "added runtime upstream");
-        Ok(runtime_config)
+        info!(id = %id, name = %dynamic_config.name, "added dynamic upstream");
+        Ok(dynamic_config)
     }
 
-    /// Updates a runtime upstream.
+    /// Updates a dynamic upstream.
     ///
     /// # Errors
     ///
@@ -548,21 +548,21 @@ impl UpstreamManager {
     /// - The upstream ID doesn't exist
     /// - Validation fails
     /// - Update fails
-    pub fn update_runtime_upstream(
+    pub fn update_dynamic_upstream(
         &self,
         id: &str,
         updates: &UpdateUpstreamRequest,
-    ) -> Result<RuntimeUpstreamConfig, UpstreamError> {
+    ) -> Result<DynamicUpstreamConfig, UpstreamError> {
         // Get current config
-        let current = self.runtime_registry.get(id).ok_or_else(|| {
-            UpstreamError::InvalidRequest(format!("Runtime upstream '{id}' not found"))
+        let current = self.dynamic_registry.get(id).ok_or_else(|| {
+            UpstreamError::InvalidRequest(format!("Dynamic upstream '{id}' not found"))
         })?;
 
         // Validate updates
         validate_upstream_updates(updates)?;
 
         // Build update struct for registry
-        let mut registry_update = RuntimeUpstreamUpdate::default();
+        let mut registry_update = DynamicUpstreamUpdate::default();
 
         if let Some(ref name) = updates.name {
             registry_update.name = Some(name.clone());
@@ -578,12 +578,12 @@ impl UpstreamManager {
         }
 
         // Update in registry
-        self.runtime_registry
+        self.dynamic_registry
             .update(id, registry_update)
             .map_err(UpstreamError::InvalidRequest)?;
 
         // Get updated config
-        let updated_config = self.runtime_registry.get(id).ok_or_else(|| {
+        let updated_config = self.dynamic_registry.get(id).ok_or_else(|| {
             UpstreamError::InvalidRequest("Failed to retrieve updated config".to_string())
         })?;
 
@@ -624,47 +624,47 @@ impl UpstreamManager {
             self.add_upstream(upstream_config);
         }
 
-        info!(id = %id, name = %updated_config.name, "updated runtime upstream");
+        info!(id = %id, name = %updated_config.name, "updated dynamic upstream");
         Ok(updated_config)
     }
 
-    /// Removes a runtime upstream.
+    /// Removes a dynamic upstream.
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - The upstream is a config-based upstream (cannot remove)
     /// - The upstream ID doesn't exist
-    pub fn remove_runtime_upstream(&self, id: &str) -> Result<(), UpstreamError> {
+    pub fn remove_dynamic_upstream(&self, id: &str) -> Result<(), UpstreamError> {
         // Get the config to check it exists and get the name
-        let config = self.runtime_registry.get(id).ok_or_else(|| {
-            UpstreamError::InvalidRequest(format!("Runtime upstream '{id}' not found"))
+        let config = self.dynamic_registry.get(id).ok_or_else(|| {
+            UpstreamError::InvalidRequest(format!("Dynamic upstream '{id}' not found"))
         })?;
 
         // Remove from registry
-        self.runtime_registry.remove(id).map_err(UpstreamError::InvalidRequest)?;
+        self.dynamic_registry.remove(id).map_err(UpstreamError::InvalidRequest)?;
 
         // Remove from load balancer
         self.remove_upstream(&config.name);
 
-        info!(id = %id, name = %config.name, "removed runtime upstream");
+        info!(id = %id, name = %config.name, "removed dynamic upstream");
         Ok(())
     }
 
-    /// Gets a runtime upstream by ID.
+    /// Gets a dynamic upstream by ID.
     #[must_use]
-    pub fn get_runtime_upstream(&self, id: &str) -> Option<RuntimeUpstreamConfig> {
-        self.runtime_registry.get(id)
+    pub fn get_dynamic_upstream(&self, id: &str) -> Option<DynamicUpstreamConfig> {
+        self.dynamic_registry.get(id)
     }
 
-    /// Lists all runtime upstreams.
+    /// Lists all dynamic upstreams.
     #[must_use]
-    pub fn list_runtime_upstreams(&self) -> Vec<RuntimeUpstreamConfig> {
-        self.runtime_registry.list_all()
+    pub fn list_dynamic_upstreams(&self) -> Vec<DynamicUpstreamConfig> {
+        self.dynamic_registry.list_all()
     }
 }
 
-/// Request to create a new runtime upstream.
+/// Request to create a new dynamic upstream.
 #[derive(Debug, Clone)]
 pub struct CreateUpstreamRequest {
     pub name: String,
@@ -675,7 +675,7 @@ pub struct CreateUpstreamRequest {
     pub timeout_seconds: u64,
 }
 
-/// Request to update a runtime upstream.
+/// Request to update a dynamic upstream.
 #[derive(Debug, Clone, Default)]
 pub struct UpdateUpstreamRequest {
     pub name: Option<String>,

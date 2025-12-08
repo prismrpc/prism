@@ -19,6 +19,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// Time after which idle rate limiter entries are removed (in seconds).
+const RATE_LIMITER_IDLE_TIMEOUT_SECS: u64 = 300;
+
 /// Token bucket rate limiter state.
 ///
 /// Uses a token bucket algorithm for rate limiting based on IP address.
@@ -129,8 +132,8 @@ impl RateLimiter {
     /// ```
     pub fn cleanup(&self) {
         let cutoff = Instant::now()
-            .checked_sub(Duration::from_secs(300))
-            .unwrap_or_else(Instant::now); // 5 min idle
+            .checked_sub(Duration::from_secs(RATE_LIMITER_IDLE_TIMEOUT_SECS))
+            .unwrap_or_else(Instant::now);
         self.buckets.retain(|_, bucket| bucket.last_refill > cutoff);
     }
 
@@ -294,5 +297,150 @@ mod tests {
 
         // IP3 should also have full tokens
         assert!(limiter.check("192.168.1.3"));
+    }
+
+    // ========= Security Edge Case Tests =========
+
+    #[test]
+    fn test_ipv6_isolation() {
+        let limiter = RateLimiter::new(2, 1);
+
+        // IPv6 addresses should have separate buckets
+        assert!(limiter.check("::1"));
+        assert!(limiter.check("::1"));
+        assert!(!limiter.check("::1"), "IPv6 loopback should be rate limited");
+
+        // Different IPv6 address should have its own bucket
+        assert!(limiter.check("2001:db8::1"));
+        assert!(limiter.check("2001:db8::1"));
+        assert!(!limiter.check("2001:db8::1"), "IPv6 global should be rate limited");
+
+        // Another IPv6 should still work
+        assert!(limiter.check("fe80::1"));
+    }
+
+    #[test]
+    fn test_ipv4_and_ipv6_separate_buckets() {
+        let limiter = RateLimiter::new(1, 1);
+
+        // Exhaust IPv4 bucket
+        assert!(limiter.check("127.0.0.1"));
+        assert!(!limiter.check("127.0.0.1"));
+
+        // IPv6 loopback should have separate bucket
+        assert!(limiter.check("::1"));
+        assert!(!limiter.check("::1"));
+
+        // Both should still be rate limited
+        assert!(!limiter.check("127.0.0.1"));
+        assert!(!limiter.check("::1"));
+    }
+
+    #[test]
+    fn test_empty_key_handling() {
+        let limiter = RateLimiter::new(2, 1);
+
+        // Empty key should still work (gets its own bucket)
+        assert!(limiter.check(""));
+        assert!(limiter.check(""));
+        assert!(!limiter.check(""), "Empty key should be rate limited");
+
+        // Non-empty key should be separate
+        assert!(limiter.check("192.168.1.1"));
+    }
+
+    #[test]
+    fn test_very_long_key_handling() {
+        let limiter = RateLimiter::new(2, 1);
+
+        // Very long key should work (edge case for memory)
+        let long_key = "x".repeat(10000);
+        assert!(limiter.check(&long_key));
+        assert!(limiter.check(&long_key));
+        assert!(!limiter.check(&long_key), "Long key should be rate limited");
+
+        // Should not affect other keys
+        assert!(limiter.check("short"));
+    }
+
+    #[test]
+    fn test_special_characters_in_key() {
+        let limiter = RateLimiter::new(1, 1);
+
+        // Keys with special characters should work and be distinct
+        assert!(limiter.check("test\0null"));
+        assert!(!limiter.check("test\0null"));
+
+        assert!(limiter.check("test\nnewline"));
+        assert!(!limiter.check("test\nnewline"));
+
+        assert!(limiter.check("test\ttab"));
+        assert!(!limiter.check("test\ttab"));
+    }
+
+    #[test]
+    fn test_unicode_key_handling() {
+        let limiter = RateLimiter::new(1, 1);
+
+        // Unicode keys should work and be distinct
+        assert!(limiter.check("user-\u{1F600}"));
+        assert!(!limiter.check("user-\u{1F600}"));
+
+        // Different unicode should be separate
+        assert!(limiter.check("user-\u{1F601}"));
+        assert!(!limiter.check("user-\u{1F601}"));
+    }
+
+    #[test]
+    fn test_zero_max_tokens() {
+        let limiter = RateLimiter::new(0, 1);
+
+        // With 0 max tokens, all requests should be rejected
+        assert!(!limiter.check("192.168.1.1"));
+        assert!(!limiter.check("192.168.1.2"));
+    }
+
+    #[test]
+    fn test_zero_refill_rate() {
+        let limiter = RateLimiter::new(2, 0);
+
+        // Use all tokens
+        assert!(limiter.check("192.168.1.1"));
+        assert!(limiter.check("192.168.1.1"));
+        assert!(!limiter.check("192.168.1.1"));
+
+        // Wait - no refill should happen
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!limiter.check("192.168.1.1"), "No refill should occur with rate 0");
+    }
+
+    #[test]
+    fn test_high_concurrency_bucket_isolation() {
+        use std::{sync::Arc, thread};
+
+        let limiter = Arc::new(RateLimiter::new(100, 1));
+        let mut handles = vec![];
+
+        // Spawn 10 threads, each with their own IP
+        for i in 0..10 {
+            let limiter = Arc::clone(&limiter);
+            let handle = thread::spawn(move || {
+                let ip = format!("192.168.{}.1", i);
+                let mut success_count = 0;
+                for _ in 0..100 {
+                    if limiter.check(&ip) {
+                        success_count += 1;
+                    }
+                }
+                success_count
+            });
+            handles.push(handle);
+        }
+
+        // Each thread should get exactly 100 successful requests (their burst)
+        for handle in handles {
+            let count = handle.join().unwrap();
+            assert_eq!(count, 100, "Each IP should get exactly 100 tokens");
+        }
     }
 }

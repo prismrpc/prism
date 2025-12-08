@@ -648,6 +648,13 @@ impl WebSocketHandler {
             "params": [with_hex_u64(block_number, std::string::ToString::to_string), true]
         });
 
+        tracing::debug!(
+            block_number = block_number,
+            upstream = upstream_name,
+            request = ?block_req,
+            "sending eth_getBlockByNumber with fullTransactions=true"
+        );
+
         let block_response = Self::send_json_request(
             http_client,
             url,
@@ -662,6 +669,43 @@ impl WebSocketHandler {
         let Some(block_data) = block_response.get("result") else {
             return Err("no result in block response".to_string());
         };
+
+        // Log transaction field structure to debug caching issues
+        if let Some(tx_field) = block_data.get("transactions") {
+            let tx_type = if tx_field.is_array() {
+                let arr = tx_field.as_array().unwrap();
+                if arr.is_empty() {
+                    "empty_array".to_string()
+                } else if let Some(first) = arr.first() {
+                    if first.is_string() {
+                        format!("array_of_hashes (count: {})", arr.len())
+                    } else if first.is_object() {
+                        format!("array_of_objects (count: {})", arr.len())
+                    } else {
+                        format!("array_of_unknown (count: {})", arr.len())
+                    }
+                } else {
+                    "empty_array".to_string()
+                }
+            } else if tx_field.is_null() {
+                "null".to_string()
+            } else {
+                format!("unexpected_type: {:?}", tx_field)
+            };
+
+            tracing::info!(
+                block_number = block_number,
+                upstream = upstream_name,
+                transactions_type = tx_type,
+                "received block response with transactions field"
+            );
+        } else {
+            tracing::warn!(
+                block_number = block_number,
+                upstream = upstream_name,
+                "block response has no transactions field at all"
+            );
+        }
 
         Self::cache_block_data(block_number, upstream_name, cache_manager, block_data).await;
 
@@ -762,18 +806,88 @@ impl WebSocketHandler {
             tracing::debug!(block_number = block_number, upstream = upstream_name, "cached body");
         }
 
-        if let Some(transactions) = block_data.get("transactions").and_then(|v| v.as_array()) {
-            for tx_json in transactions {
-                if let Some(tx) = json_transaction_to_transaction_record(tx_json) {
-                    cache_manager.transaction_cache.insert_transaction(tx).await;
+        // Check if transactions field exists
+        match block_data.get("transactions") {
+            None => {
+                tracing::warn!(
+                    block_number = block_number,
+                    upstream = upstream_name,
+                    "block data has no 'transactions' field"
+                );
+            }
+            Some(tx_value) => {
+                // Check if it's an array
+                match tx_value.as_array() {
+                    None => {
+                        tracing::warn!(
+                            block_number = block_number,
+                            upstream = upstream_name,
+                            tx_value_type = ?tx_value,
+                            "transactions field is not an array (possibly null or transaction hashes)"
+                        );
+                    }
+                    Some(transactions) => {
+                        if transactions.is_empty() {
+                            tracing::debug!(
+                                block_number = block_number,
+                                upstream = upstream_name,
+                                "block has no transactions (empty block)"
+                            );
+                        } else {
+                            let mut cached_count = 0;
+                            let mut failed_count = 0;
+
+                            // Check first transaction to see if we got hashes or objects
+                            if let Some(first_tx) = transactions.first() {
+                                if first_tx.is_string() {
+                                    tracing::error!(
+                                        block_number = block_number,
+                                        upstream = upstream_name,
+                                        transaction_count = transactions.len(),
+                                        first_tx = ?first_tx,
+                                        "BUG: eth_getBlockByNumber returned transaction HASHES instead of full objects! \
+                                         This means fullTransactions=true parameter is not working correctly."
+                                    );
+                                    return;
+                                }
+                            }
+
+                            for tx_json in transactions {
+                                if let Some(tx) = json_transaction_to_transaction_record(tx_json) {
+                                    cache_manager.transaction_cache.insert_transaction(tx).await;
+                                    cached_count += 1;
+                                } else {
+                                    failed_count += 1;
+                                    tracing::debug!(
+                                        block_number = block_number,
+                                        upstream = upstream_name,
+                                        tx_json = ?tx_json,
+                                        "failed to convert transaction to record"
+                                    );
+                                }
+                            }
+
+                            if failed_count > 0 {
+                                tracing::warn!(
+                                    block_number = block_number,
+                                    upstream = upstream_name,
+                                    total_count = transactions.len(),
+                                    cached_count = cached_count,
+                                    failed_count = failed_count,
+                                    "some transactions failed to convert (check for EIP-1559+ support or missing fields)"
+                                );
+                            } else if cached_count > 0 {
+                                tracing::debug!(
+                                    block_number = block_number,
+                                    upstream = upstream_name,
+                                    transaction_count = cached_count,
+                                    "cached transactions"
+                                );
+                            }
+                        }
+                    }
                 }
             }
-            tracing::debug!(
-                block_number = block_number,
-                upstream = upstream_name,
-                transaction_count = transactions.len(),
-                "cached transactions"
-            );
         }
     }
 

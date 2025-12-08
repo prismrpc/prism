@@ -1,7 +1,7 @@
-//! Runtime upstream registry for tracking runtime-added upstreams.
+//! Dynamic upstream registry for tracking dynamically-added upstreams.
 //!
 //! This module provides a registry to distinguish between upstreams loaded from config
-//! and those added via the admin API at runtime. Runtime upstreams are persisted to disk
+//! and those added via the admin API at runtime. Dynamic upstreams are persisted to disk
 //! for restart survival.
 
 use parking_lot::RwLock;
@@ -9,12 +9,12 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fs, path::PathBuf};
 use tracing::{debug, error, info};
 
-/// Configuration for a runtime-added upstream.
+/// Configuration for a dynamically-added upstream.
 ///
 /// This is persisted to disk and contains all information needed to reconstruct
 /// the upstream after a restart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RuntimeUpstreamConfig {
+pub struct DynamicUpstreamConfig {
     pub id: String,
     pub name: String,
     pub url: String,
@@ -32,33 +32,33 @@ pub struct RuntimeUpstreamConfig {
 pub enum UpstreamSource {
     /// Loaded from TOML configuration file.
     Config,
-    /// Added via admin API at runtime.
-    Runtime,
+    /// Added via admin API at runtime (dynamic).
+    Dynamic,
 }
 
-/// Registry for tracking runtime-added upstreams.
+/// Registry for tracking dynamically-added upstreams.
 ///
-/// Maintains separation between config-based and runtime-added upstreams,
-/// providing persistence for runtime upstreams.
-pub struct RuntimeUpstreamRegistry {
-    /// Runtime-added upstreams indexed by ID.
-    runtime_upstreams: RwLock<HashMap<String, RuntimeUpstreamConfig>>,
+/// Maintains separation between config-based and dynamically-added upstreams,
+/// providing persistence for dynamic upstreams.
+pub struct DynamicUpstreamRegistry {
+    /// Dynamically-added upstreams indexed by ID.
+    dynamic_upstreams: RwLock<HashMap<String, DynamicUpstreamConfig>>,
     /// Names of upstreams from config (for source checking).
     config_upstream_names: RwLock<Vec<String>>,
     /// Optional file path for persistence.
     storage_path: Option<PathBuf>,
 }
 
-impl RuntimeUpstreamRegistry {
-    /// Creates a new runtime upstream registry.
+impl DynamicUpstreamRegistry {
+    /// Creates a new dynamic upstream registry.
     ///
     /// # Arguments
     ///
-    /// * `storage_path` - Optional path to JSON file for persisting runtime upstreams
+    /// * `storage_path` - Optional path to JSON file for persisting dynamic upstreams
     #[must_use]
     pub fn new(storage_path: Option<PathBuf>) -> Self {
         Self {
-            runtime_upstreams: RwLock::new(HashMap::new()),
+            dynamic_upstreams: RwLock::new(HashMap::new()),
             config_upstream_names: RwLock::new(Vec::new()),
             storage_path,
         }
@@ -73,29 +73,29 @@ impl RuntimeUpstreamRegistry {
         debug!(count = config_names.len(), "initialized config upstream names");
     }
 
-    /// Adds a runtime upstream to the registry.
+    /// Adds a dynamic upstream to the registry.
     ///
     /// # Errors
     ///
     /// Returns an error if:
     /// - An upstream with the same name already exists
-    /// - The upstream ID conflicts with an existing runtime upstream
+    /// - The upstream ID conflicts with an existing dynamic upstream
     /// - Persistence fails
-    pub fn add(&self, config: &RuntimeUpstreamConfig) -> Result<String, String> {
+    pub fn add(&self, config: &DynamicUpstreamConfig) -> Result<String, String> {
         // Check if name conflicts with config upstreams
         if self.is_config_upstream(&config.name) {
             return Err(format!(
-                "Cannot add runtime upstream '{}': name conflicts with config upstream",
+                "Cannot add dynamic upstream '{}': name conflicts with config upstream",
                 config.name
             ));
         }
 
-        // Check if name conflicts with existing runtime upstreams
+        // Check if name conflicts with existing dynamic upstreams
         {
-            let upstreams = self.runtime_upstreams.read();
+            let upstreams = self.dynamic_upstreams.read();
             if upstreams.values().any(|u| u.name == config.name) {
                 return Err(format!(
-                    "Cannot add runtime upstream '{}': name already exists",
+                    "Cannot add dynamic upstream '{}': name already exists",
                     config.name
                 ));
             }
@@ -105,21 +105,21 @@ impl RuntimeUpstreamRegistry {
 
         // Add to registry
         {
-            let mut upstreams = self.runtime_upstreams.write();
+            let mut upstreams = self.dynamic_upstreams.write();
             upstreams.insert(id.clone(), config.clone());
         }
 
         // Persist to disk
         if let Err(e) = self.save_to_disk() {
-            error!(error = %e, "failed to persist runtime upstreams");
+            error!(error = %e, "failed to persist dynamic upstreams");
             // Don't fail the operation, but log the error
         }
 
-        info!(id = %id, name = %config.name, "added runtime upstream");
+        info!(id = %id, name = %config.name, "added dynamic upstream");
         Ok(id)
     }
 
-    /// Updates a runtime upstream.
+    /// Updates a dynamic upstream.
     ///
     /// # Errors
     ///
@@ -127,16 +127,16 @@ impl RuntimeUpstreamRegistry {
     /// - The upstream ID doesn't exist
     /// - The new name conflicts with another upstream
     /// - Persistence fails
-    pub fn update(&self, id: &str, updates: RuntimeUpstreamUpdate) -> Result<(), String> {
+    pub fn update(&self, id: &str, updates: DynamicUpstreamUpdate) -> Result<(), String> {
         // Check for name conflicts first, before acquiring write lock
         if let Some(ref new_name) = updates.name {
-            let upstreams = self.runtime_upstreams.read();
+            let upstreams = self.dynamic_upstreams.read();
 
             // Get current name
             let current_name = upstreams
                 .get(id)
                 .map(|u| u.name.clone())
-                .ok_or_else(|| format!("Runtime upstream '{id}' not found"))?;
+                .ok_or_else(|| format!("Dynamic upstream '{id}' not found"))?;
 
             if new_name != &current_name {
                 // Check config upstreams
@@ -146,7 +146,7 @@ impl RuntimeUpstreamRegistry {
                     ));
                 }
 
-                // Check other runtime upstreams
+                // Check other dynamic upstreams
                 if upstreams.values().any(|u| u.id != id && &u.name == new_name) {
                     return Err(format!("Cannot rename to '{new_name}': name already exists"));
                 }
@@ -154,11 +154,11 @@ impl RuntimeUpstreamRegistry {
         }
 
         // Now acquire write lock and apply updates
-        let mut upstreams = self.runtime_upstreams.write();
+        let mut upstreams = self.dynamic_upstreams.write();
 
         let config = upstreams
             .get_mut(id)
-            .ok_or_else(|| format!("Runtime upstream '{id}' not found"))?;
+            .ok_or_else(|| format!("Dynamic upstream '{id}' not found"))?;
 
         // Apply updates
         if let Some(name) = updates.name {
@@ -184,47 +184,47 @@ impl RuntimeUpstreamRegistry {
 
         // Persist to disk
         if let Err(e) = self.save_to_disk() {
-            error!(error = %e, "failed to persist runtime upstreams");
+            error!(error = %e, "failed to persist dynamic upstreams");
         }
 
-        info!(id = %id, "updated runtime upstream");
+        info!(id = %id, "updated dynamic upstream");
         Ok(())
     }
 
-    /// Removes a runtime upstream from the registry.
+    /// Removes a dynamic upstream from the registry.
     ///
     /// # Errors
     ///
     /// Returns an error if the upstream ID doesn't exist.
-    pub fn remove(&self, id: &str) -> Result<RuntimeUpstreamConfig, String> {
-        let mut upstreams = self.runtime_upstreams.write();
+    pub fn remove(&self, id: &str) -> Result<DynamicUpstreamConfig, String> {
+        let mut upstreams = self.dynamic_upstreams.write();
 
         let config = upstreams
             .remove(id)
-            .ok_or_else(|| format!("Runtime upstream '{id}' not found"))?;
+            .ok_or_else(|| format!("Dynamic upstream '{id}' not found"))?;
 
         drop(upstreams);
 
         // Persist to disk
         if let Err(e) = self.save_to_disk() {
-            error!(error = %e, "failed to persist runtime upstreams");
+            error!(error = %e, "failed to persist dynamic upstreams");
         }
 
-        info!(id = %id, name = %config.name, "removed runtime upstream");
+        info!(id = %id, name = %config.name, "removed dynamic upstream");
         Ok(config)
     }
 
-    /// Gets a runtime upstream by ID.
+    /// Gets a dynamic upstream by ID.
     #[must_use]
-    pub fn get(&self, id: &str) -> Option<RuntimeUpstreamConfig> {
-        let upstreams = self.runtime_upstreams.read();
+    pub fn get(&self, id: &str) -> Option<DynamicUpstreamConfig> {
+        let upstreams = self.dynamic_upstreams.read();
         upstreams.get(id).cloned()
     }
 
-    /// Lists all runtime upstreams.
+    /// Lists all dynamic upstreams.
     #[must_use]
-    pub fn list_all(&self) -> Vec<RuntimeUpstreamConfig> {
-        let upstreams = self.runtime_upstreams.read();
+    pub fn list_all(&self) -> Vec<DynamicUpstreamConfig> {
+        let upstreams = self.dynamic_upstreams.read();
         upstreams.values().cloned().collect()
     }
 
@@ -241,16 +241,16 @@ impl RuntimeUpstreamRegistry {
         if self.is_config_upstream(name) {
             Some(UpstreamSource::Config)
         } else {
-            let upstreams = self.runtime_upstreams.read();
+            let upstreams = self.dynamic_upstreams.read();
             if upstreams.values().any(|u| u.name == name) {
-                Some(UpstreamSource::Runtime)
+                Some(UpstreamSource::Dynamic)
             } else {
                 None
             }
         }
     }
 
-    /// Loads runtime upstreams from disk.
+    /// Loads dynamic upstreams from disk.
     ///
     /// # Errors
     ///
@@ -261,15 +261,15 @@ impl RuntimeUpstreamRegistry {
         };
 
         if !path.exists() {
-            debug!("no runtime upstreams file found, starting fresh");
+            debug!("no dynamic upstreams file found, starting fresh");
             return Ok(());
         }
 
         let contents = fs::read_to_string(path)?;
-        let configs: Vec<RuntimeUpstreamConfig> = serde_json::from_str(&contents)
+        let configs: Vec<DynamicUpstreamConfig> = serde_json::from_str(&contents)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
 
-        let mut upstreams = self.runtime_upstreams.write();
+        let mut upstreams = self.dynamic_upstreams.write();
         upstreams.clear();
         for config in configs {
             upstreams.insert(config.id.clone(), config);
@@ -278,13 +278,13 @@ impl RuntimeUpstreamRegistry {
         info!(
             count = upstreams.len(),
             path = %path.display(),
-            "loaded runtime upstreams from disk"
+            "loaded dynamic upstreams from disk"
         );
 
         Ok(())
     }
 
-    /// Saves runtime upstreams to disk.
+    /// Saves dynamic upstreams to disk.
     ///
     /// # Errors
     ///
@@ -294,8 +294,8 @@ impl RuntimeUpstreamRegistry {
             return Ok(()); // No storage path configured
         };
 
-        let upstreams = self.runtime_upstreams.read();
-        let configs: Vec<RuntimeUpstreamConfig> = upstreams.values().cloned().collect();
+        let upstreams = self.dynamic_upstreams.read();
+        let configs: Vec<DynamicUpstreamConfig> = upstreams.values().cloned().collect();
         drop(upstreams);
 
         // Create parent directory if needed
@@ -311,16 +311,16 @@ impl RuntimeUpstreamRegistry {
         debug!(
             count = configs.len(),
             path = %path.display(),
-            "saved runtime upstreams to disk"
+            "saved dynamic upstreams to disk"
         );
 
         Ok(())
     }
 }
 
-/// Updates to apply to a runtime upstream.
+/// Updates to apply to a dynamic upstream.
 #[derive(Debug, Clone, Default)]
-pub struct RuntimeUpstreamUpdate {
+pub struct DynamicUpstreamUpdate {
     pub name: Option<String>,
     pub url: Option<String>,
     pub ws_url: Option<Option<String>>,
@@ -333,8 +333,8 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
-    fn create_test_config(id: &str, name: &str) -> RuntimeUpstreamConfig {
-        RuntimeUpstreamConfig {
+    fn create_test_config(id: &str, name: &str) -> DynamicUpstreamConfig {
+        DynamicUpstreamConfig {
             id: id.to_string(),
             name: name.to_string(),
             url: format!("https://{name}.example.com"),
@@ -349,8 +349,8 @@ mod tests {
     }
 
     #[test]
-    fn test_add_runtime_upstream() {
-        let registry = RuntimeUpstreamRegistry::new(None);
+    fn test_add_dynamic_upstream() {
+        let registry = DynamicUpstreamRegistry::new(None);
         let config = create_test_config("1", "test-upstream");
 
         let result = registry.add(&config);
@@ -364,7 +364,7 @@ mod tests {
 
     #[test]
     fn test_duplicate_name_rejection() {
-        let registry = RuntimeUpstreamRegistry::new(None);
+        let registry = DynamicUpstreamRegistry::new(None);
 
         let config1 = create_test_config("1", "test-upstream");
         let config2 = create_test_config("2", "test-upstream");
@@ -375,7 +375,7 @@ mod tests {
 
     #[test]
     fn test_config_upstream_conflict() {
-        let registry = RuntimeUpstreamRegistry::new(None);
+        let registry = DynamicUpstreamRegistry::new(None);
         registry.initialize_config_upstreams(vec!["config-upstream".to_string()]);
 
         let config = create_test_config("1", "config-upstream");
@@ -387,12 +387,12 @@ mod tests {
 
     #[test]
     fn test_update_upstream() {
-        let registry = RuntimeUpstreamRegistry::new(None);
+        let registry = DynamicUpstreamRegistry::new(None);
         let config = create_test_config("1", "test-upstream");
 
         registry.add(&config).unwrap();
 
-        let updates = RuntimeUpstreamUpdate {
+        let updates = DynamicUpstreamUpdate {
             name: Some("updated-name".to_string()),
             weight: Some(200),
             ..Default::default()
@@ -408,7 +408,7 @@ mod tests {
 
     #[test]
     fn test_remove_upstream() {
-        let registry = RuntimeUpstreamRegistry::new(None);
+        let registry = DynamicUpstreamRegistry::new(None);
         let config = create_test_config("1", "test-upstream");
 
         registry.add(&config).unwrap();
@@ -421,7 +421,7 @@ mod tests {
 
     #[test]
     fn test_list_all() {
-        let registry = RuntimeUpstreamRegistry::new(None);
+        let registry = DynamicUpstreamRegistry::new(None);
 
         let config1 = create_test_config("1", "upstream-1");
         let config2 = create_test_config("2", "upstream-2");
@@ -435,32 +435,32 @@ mod tests {
 
     #[test]
     fn test_get_source() {
-        let registry = RuntimeUpstreamRegistry::new(None);
+        let registry = DynamicUpstreamRegistry::new(None);
         registry.initialize_config_upstreams(vec!["config-upstream".to_string()]);
 
-        let config = create_test_config("1", "runtime-upstream");
+        let config = create_test_config("1", "dynamic-upstream");
         registry.add(&config).unwrap();
 
         assert_eq!(registry.get_source("config-upstream"), Some(UpstreamSource::Config));
-        assert_eq!(registry.get_source("runtime-upstream"), Some(UpstreamSource::Runtime));
+        assert_eq!(registry.get_source("dynamic-upstream"), Some(UpstreamSource::Dynamic));
         assert_eq!(registry.get_source("non-existent"), None);
     }
 
     #[test]
     fn test_persistence() {
         let temp_dir = TempDir::new().unwrap();
-        let storage_path = temp_dir.path().join("runtime_upstreams.json");
+        let storage_path = temp_dir.path().join("dynamic_upstreams.json");
 
         // Create registry and add upstreams
         {
-            let registry = RuntimeUpstreamRegistry::new(Some(storage_path.clone()));
+            let registry = DynamicUpstreamRegistry::new(Some(storage_path.clone()));
             let config = create_test_config("1", "test-upstream");
             registry.add(&config).unwrap();
         }
 
         // Load from disk in new registry
         {
-            let registry = RuntimeUpstreamRegistry::new(Some(storage_path));
+            let registry = DynamicUpstreamRegistry::new(Some(storage_path));
             registry.load_from_disk().unwrap();
 
             let upstreams = registry.list_all();

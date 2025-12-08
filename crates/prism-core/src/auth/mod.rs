@@ -119,7 +119,7 @@
 //! # Example Usage
 //!
 //! ```rust,no_run
-//! use prism_core::auth::{repository::SqliteRepository, AuthenticatedKey};
+//! use prism_core::auth::{repository::SqliteRepository, AuthenticatedKey, ApiKeyScope};
 //! use std::sync::Arc;
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -143,6 +143,7 @@
 //!         daily_request_limit: key.daily_request_limit,
 //!         allowed_methods: methods.iter().map(|m| m.method_name.clone()).collect(),
 //!         method_limits: Default::default(),
+//!         scope: key.scope,
 //!     };
 //!
 //!     // Check method authorization
@@ -171,6 +172,9 @@
 pub mod api_key;
 pub mod repository;
 
+// Re-export commonly used types
+pub use api_key::ApiKeyScope;
+
 use thiserror::Error;
 
 /// Error types for API key authentication and authorization operations.
@@ -191,6 +195,10 @@ pub enum AuthError {
     /// The requested RPC method is not permitted for this API key
     #[error("Method not allowed: {0}")]
     MethodNotAllowed(String),
+
+    /// The API key scope does not permit access to this endpoint
+    #[error("Scope not allowed: key has '{0}' scope, but '{1}' is required")]
+    ScopeNotAllowed(String, String),
 
     /// The API key has exceeded its rate limit tokens
     #[error("Rate limit exceeded")]
@@ -246,7 +254,7 @@ impl From<sqlx::Error> for AuthError {
 /// # Example
 ///
 /// ```
-/// use prism_core::auth::AuthenticatedKey;
+/// use prism_core::auth::{AuthenticatedKey, ApiKeyScope};
 /// use std::collections::HashMap;
 ///
 /// // After successful authentication:
@@ -258,6 +266,7 @@ impl From<sqlx::Error> for AuthError {
 ///     daily_request_limit: Some(10000),
 ///     allowed_methods: vec!["eth_getLogs".to_string(), "eth_getBlockByNumber".to_string()],
 ///     method_limits: HashMap::new(),
+///     scope: ApiKeyScope::Rpc,
 /// };
 ///
 /// // Check if method is allowed
@@ -281,4 +290,6 @@ pub struct AuthenticatedKey {
     pub allowed_methods: Vec<String>,
     /// Per-method daily request limits (method name -> remaining requests)
     pub method_limits: std::collections::HashMap<String, i64>,
+    /// Scope/role determining which endpoints this key can access
+    pub scope: api_key::ApiKeyScope,
 }

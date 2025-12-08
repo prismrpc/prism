@@ -6,7 +6,11 @@
 //! delegating business logic to the core library.
 
 pub mod auth;
+pub mod correlation_id;
 pub mod rate_limiting;
 pub mod validation;
 
-pub use auth::api_key_middleware;
+pub use auth::{admin_auth_middleware, api_key_middleware, AdminAuthState};
+pub use correlation_id::{
+    create_request_id_layers, CorrelationId, UuidRequestIdGenerator, X_REQUEST_ID,
+};

@@ -5,13 +5,14 @@
 #![allow(clippy::cast_sign_loss)]
 
 use axum::{
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{ConnectInfo, Path, Query, State},
+    http::{HeaderMap, StatusCode},
     response::IntoResponse,
     Json,
 };
 
 use crate::admin::{
+    audit,
     prometheus::parse_time_range,
     types::{
         BulkHealthCheckResponse, CircuitBreakerMetrics, CircuitBreakerState, HealthCheckResult,
@@ -25,6 +26,73 @@ use prism_core::upstream::{
     CreateUpstreamRequest as CoreCreateUpstreamRequest,
     UpdateUpstreamRequest as CoreUpdateUpstreamRequest,
 };
+use std::net::SocketAddr;
+
+/// Default scoring weights used when scoring engine data is unavailable.
+mod defaults {
+    /// Default weight for latency factor in scoring.
+    pub const LATENCY_WEIGHT: f64 = 8.0;
+    /// Default weight for error rate factor in scoring.
+    pub const ERROR_RATE_WEIGHT: f64 = 4.0;
+    /// Default weight for block lag factor in scoring.
+    pub const BLOCK_LAG_WEIGHT: f64 = 2.0;
+}
+
+/// Minimum allowed upstream weight.
+const MIN_UPSTREAM_WEIGHT: u32 = 1;
+/// Maximum allowed upstream weight.
+const MAX_UPSTREAM_WEIGHT: u32 = 1000;
+/// Maximum allowed upstream name length.
+const MAX_UPSTREAM_NAME_LENGTH: usize = 128;
+
+/// Validates an upstream URL for security (SSRF protection).
+///
+/// Only allows http and https schemes to prevent file://, ftp://, or other
+/// potentially dangerous URL schemes.
+fn validate_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
+
+    match parsed.scheme() {
+        "http" | "https" => Ok(()),
+        scheme => {
+            Err(format!("Invalid URL scheme '{scheme}'. Only 'http' and 'https' are allowed."))
+        }
+    }
+}
+
+/// Validates an upstream name.
+///
+/// Names must be non-empty, within length limits, and contain only safe characters.
+fn validate_name(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("Upstream name cannot be empty".to_string());
+    }
+
+    if name.len() > MAX_UPSTREAM_NAME_LENGTH {
+        return Err(format!(
+            "Upstream name too long. Maximum length is {MAX_UPSTREAM_NAME_LENGTH} characters."
+        ));
+    }
+
+    // Allow alphanumeric, dash, underscore, and dot
+    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == '.') {
+        return Err(
+            "Upstream name contains invalid characters. Only alphanumeric, dash, underscore, and dot are allowed.".to_string()
+        );
+    }
+
+    Ok(())
+}
+
+/// Validates an upstream weight.
+fn validate_weight(weight: u32) -> Result<(), String> {
+    if weight < MIN_UPSTREAM_WEIGHT || weight > MAX_UPSTREAM_WEIGHT {
+        return Err(format!(
+            "Weight must be between {MIN_UPSTREAM_WEIGHT} and {MAX_UPSTREAM_WEIGHT}."
+        ));
+    }
+    Ok(())
+}
 
 /// Masks sensitive parts of URLs (API keys, etc.).
 fn mask_url(url: &str) -> String {
@@ -95,6 +163,51 @@ fn convert_cb_state(
     }
 }
 
+/// Extracted upstream metrics from scoring engine and health data.
+struct ExtractedMetrics {
+    composite_score: f64,
+    error_rate: f64,
+    throttle_rate: f64,
+    requests_handled: u64,
+    latency_p90: u64,
+}
+
+/// Extracts upstream metrics from scoring engine data and health status.
+///
+/// Prefers scoring engine data when available, falls back to raw metrics,
+/// then to health data if neither is available.
+fn extract_upstream_metrics(
+    score: Option<&prism_core::upstream::scoring::UpstreamScore>,
+    metrics: Option<(f64, f64, u64, u64, Option<u64>)>,
+    health: &prism_core::types::UpstreamHealth,
+) -> ExtractedMetrics {
+    if let Some(score) = score {
+        ExtractedMetrics {
+            composite_score: score.composite_score,
+            error_rate: score.error_rate,
+            throttle_rate: score.throttle_rate,
+            requests_handled: score.total_requests,
+            latency_p90: score.latency_p90_ms.unwrap_or(0),
+        }
+    } else if let Some((err_rate, thr_rate, total_req, _block, _avg)) = metrics {
+        ExtractedMetrics {
+            composite_score: 0.0,
+            error_rate: err_rate,
+            throttle_rate: thr_rate,
+            requests_handled: total_req,
+            latency_p90: health.latency_p99_ms.unwrap_or(0),
+        }
+    } else {
+        ExtractedMetrics {
+            composite_score: 0.0,
+            error_rate: 0.0,
+            throttle_rate: 0.0,
+            requests_handled: 0,
+            latency_p90: health.latency_p99_ms.unwrap_or(0),
+        }
+    }
+}
+
 /// GET /admin/upstreams
 ///
 /// Lists all configured upstreams with current metrics.
@@ -126,25 +239,9 @@ pub async fn list_upstreams(State(state): State<AdminState>) -> impl IntoRespons
         // Get scoring metrics if available
         let upstream_name = config.name.as_ref();
         let score = scoring_engine.get_score(upstream_name);
-        let metrics = scoring_engine.get_metrics(upstream_name);
+        let metrics_data = scoring_engine.get_metrics(upstream_name);
 
-        let (composite_score, error_rate, throttle_rate, requests_handled, latency_p90) =
-            if let Some(score) = score {
-                // Use scoring data if available (preferred as it's more recent)
-                (
-                    score.composite_score,
-                    score.error_rate,
-                    score.throttle_rate,
-                    score.total_requests,
-                    score.latency_p90_ms.unwrap_or(0),
-                )
-            } else if let Some((err_rate, thr_rate, total_req, _block, _avg)) = metrics {
-                // Fallback to raw metrics if score not yet calculated
-                (0.0, err_rate, thr_rate, total_req, health.latency_p99_ms.unwrap_or(0))
-            } else {
-                // No metrics available yet
-                (0.0, 0.0, 0.0, 0, health.latency_p99_ms.unwrap_or(0))
-            };
+        let extracted_metrics = extract_upstream_metrics(score.as_ref(), metrics_data, &health);
 
         result.push(Upstream {
             id: idx.to_string(),
@@ -156,12 +253,12 @@ pub async fn list_upstreams(State(state): State<AdminState>) -> impl IntoRespons
                 UpstreamStatus::Unhealthy
             },
             circuit_breaker_state: convert_cb_state(cb_state),
-            composite_score,
-            latency_p90,
-            error_rate,
-            throttle_rate,
+            composite_score: extracted_metrics.composite_score,
+            latency_p90: extracted_metrics.latency_p90,
+            error_rate: extracted_metrics.error_rate,
+            throttle_rate: extracted_metrics.throttle_rate,
             block_lag,
-            requests_handled,
+            requests_handled: extracted_metrics.requests_handled,
             weight: config.weight,
             ws_connected: config.supports_websocket && config.ws_url.is_some(),
         });
@@ -211,25 +308,9 @@ pub async fn get_upstream(
     // Get scoring metrics if available
     let upstream_name = config.name.as_ref();
     let score = scoring_engine.get_score(upstream_name);
-    let metrics = scoring_engine.get_metrics(upstream_name);
+    let metrics_data = scoring_engine.get_metrics(upstream_name);
 
-    let (composite_score, error_rate, throttle_rate, requests_handled, latency_p90) =
-        if let Some(score) = score {
-            // Use scoring data if available (preferred as it's more recent)
-            (
-                score.composite_score,
-                score.error_rate,
-                score.throttle_rate,
-                score.total_requests,
-                score.latency_p90_ms.unwrap_or(0),
-            )
-        } else if let Some((err_rate, thr_rate, total_req, _block, _avg)) = metrics {
-            // Fallback to raw metrics if score not yet calculated
-            (0.0, err_rate, thr_rate, total_req, health.latency_p99_ms.unwrap_or(0))
-        } else {
-            // No metrics available yet
-            (0.0, 0.0, 0.0, 0, health.latency_p99_ms.unwrap_or(0))
-        };
+    let extracted_metrics = extract_upstream_metrics(score.as_ref(), metrics_data, &health);
 
     let upstream = Upstream {
         id: idx.to_string(),
@@ -241,12 +322,12 @@ pub async fn get_upstream(
             UpstreamStatus::Unhealthy
         },
         circuit_breaker_state: convert_cb_state(cb_state),
-        composite_score,
-        latency_p90,
-        error_rate,
-        throttle_rate,
+        composite_score: extracted_metrics.composite_score,
+        latency_p90: extracted_metrics.latency_p90,
+        error_rate: extracted_metrics.error_rate,
+        throttle_rate: extracted_metrics.throttle_rate,
         block_lag,
-        requests_handled,
+        requests_handled: extracted_metrics.requests_handled,
         weight: config.weight,
         ws_connected: config.supports_websocket && config.ws_url.is_some(),
     };
@@ -301,23 +382,7 @@ pub async fn get_upstream_metrics(
     let score = scoring_engine.get_score(upstream_name);
     let metrics_data = scoring_engine.get_metrics(upstream_name);
 
-    let (composite_score, error_rate, throttle_rate, requests_handled, latency_p90) =
-        if let Some(score) = &score {
-            // Use scoring data if available (preferred as it's more recent)
-            (
-                score.composite_score,
-                score.error_rate,
-                score.throttle_rate,
-                score.total_requests,
-                score.latency_p90_ms.unwrap_or(0),
-            )
-        } else if let Some((err_rate, thr_rate, total_req, _block, _avg)) = metrics_data {
-            // Fallback to raw metrics if score not yet calculated
-            (0.0, err_rate, thr_rate, total_req, health.latency_p99_ms.unwrap_or(0))
-        } else {
-            // No metrics available yet
-            (0.0, 0.0, 0.0, 0, health.latency_p99_ms.unwrap_or(0))
-        };
+    let extracted_metrics = extract_upstream_metrics(score.as_ref(), metrics_data, &health);
 
     let upstream = Upstream {
         id: idx.to_string(),
@@ -329,12 +394,12 @@ pub async fn get_upstream_metrics(
             UpstreamStatus::Unhealthy
         },
         circuit_breaker_state: convert_cb_state(cb_state),
-        composite_score,
-        latency_p90,
-        error_rate,
-        throttle_rate,
+        composite_score: extracted_metrics.composite_score,
+        latency_p90: extracted_metrics.latency_p90,
+        error_rate: extracted_metrics.error_rate,
+        throttle_rate: extracted_metrics.throttle_rate,
         block_lag,
-        requests_handled,
+        requests_handled: extracted_metrics.requests_handled,
         weight: config.weight,
         ws_connected: config.supports_websocket && config.ws_url.is_some(),
     };
@@ -383,19 +448,19 @@ pub async fn get_upstream_metrics(
         vec![
             UpstreamScoringFactor {
                 factor: "Latency".to_string(),
-                weight: 8.0,
+                weight: defaults::LATENCY_WEIGHT,
                 score: 0.0,
                 value: format!("P99: {}ms (insufficient data)", health.latency_p99_ms.unwrap_or(0)),
             },
             UpstreamScoringFactor {
                 factor: "Error Rate".to_string(),
-                weight: 4.0,
+                weight: defaults::ERROR_RATE_WEIGHT,
                 score: 0.0,
-                value: format!("{:.2}% (insufficient data)", error_rate * 100.0),
+                value: format!("{:.2}% (insufficient data)", extracted_metrics.error_rate * 100.0),
             },
             UpstreamScoringFactor {
                 factor: "Block Lag".to_string(),
-                weight: 2.0,
+                weight: defaults::BLOCK_LAG_WEIGHT,
                 score: 0.0,
                 value: format!("{block_lag} blocks (insufficient data)"),
             },
@@ -416,9 +481,11 @@ pub async fn get_upstream_metrics(
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let request_distribution = vec![UpstreamRequestDistribution {
         method: "all".to_string(),
-        requests: requests_handled,
-        success: requests_handled.saturating_sub((requests_handled as f64 * error_rate) as u64),
-        failed: (requests_handled as f64 * error_rate) as u64,
+        requests: extracted_metrics.requests_handled,
+        success: extracted_metrics.requests_handled.saturating_sub(
+            (extracted_metrics.requests_handled as f64 * extracted_metrics.error_rate) as u64,
+        ),
+        failed: (extracted_metrics.requests_handled as f64 * extracted_metrics.error_rate) as u64,
     }];
 
     let metrics =
@@ -445,8 +512,11 @@ pub async fn get_upstream_metrics(
 )]
 pub async fn trigger_health_check(
     State(state): State<AdminState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<HealthCheckResult>, (StatusCode, String)> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
+
     let idx: usize = id
         .parse()
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid upstream ID".to_string()))?;
@@ -457,11 +527,22 @@ pub async fn trigger_health_check(
         .get(idx)
         .ok_or((StatusCode::NOT_FOUND, "Upstream not found".to_string()))?;
 
+    let upstream_name = u.config().name.to_string();
+
     // Perform health check
     let start = std::time::Instant::now();
     let is_healthy = u.health_check().await;
     #[allow(clippy::cast_possible_truncation)]
     let latency = start.elapsed().as_millis() as u64;
+
+    tracing::info!(
+        correlation_id = ?correlation_id,
+        upstream = %upstream_name,
+        upstream_id = %id,
+        is_healthy = is_healthy,
+        latency_ms = latency,
+        "triggered health check"
+    );
 
     let response = HealthCheckResult {
         upstream_id: id,
@@ -489,8 +570,18 @@ pub async fn trigger_health_check(
         (status = 500, description = "Internal server error")
     )
 )]
-pub async fn trigger_all_health_checks(State(state): State<AdminState>) -> impl IntoResponse {
+pub async fn trigger_all_health_checks(
+    State(state): State<AdminState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
     let upstreams = state.proxy_engine.get_upstream_manager().get_all_upstreams();
+
+    tracing::info!(
+        correlation_id = ?correlation_id,
+        upstream_count = upstreams.len(),
+        "triggered bulk health check for all upstreams"
+    );
 
     // Run all health checks in parallel using futures::future::join_all
     let health_check_futures: Vec<_> = upstreams
@@ -543,8 +634,12 @@ pub async fn trigger_all_health_checks(State(state): State<AdminState>) -> impl 
 )]
 pub async fn reset_circuit_breaker(
     State(state): State<AdminState>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<SuccessResponse>, (StatusCode, String)> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
+
     let idx: usize = id
         .parse()
         .map_err(|_| (StatusCode::BAD_REQUEST, "Invalid upstream ID".to_string()))?;
@@ -556,6 +651,18 @@ pub async fn reset_circuit_breaker(
         .ok_or((StatusCode::NOT_FOUND, "Upstream not found".to_string()))?;
 
     u.reset_circuit_breaker().await;
+
+    let upstream_name = u.config().name.to_string();
+
+    // Audit log the circuit breaker reset
+    audit::log_update("upstream_circuit_breaker", &id, Some(addr), None);
+
+    tracing::info!(
+        correlation_id = ?correlation_id,
+        upstream = %upstream_name,
+        upstream_id = %id,
+        "reset circuit breaker"
+    );
 
     Ok(Json(SuccessResponse { success: true }))
 }
@@ -579,13 +686,15 @@ pub async fn reset_circuit_breaker(
 )]
 pub async fn update_weight(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<String>,
     Json(request): Json<crate::admin::types::UpdateWeightRequest>,
 ) -> Result<Json<SuccessResponse>, (StatusCode, String)> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
+
     // Validate weight
-    if request.weight == 0 || request.weight > 1000 {
-        return Err((StatusCode::BAD_REQUEST, "Weight must be between 1 and 1000".to_string()));
-    }
+    validate_weight(request.weight).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
 
     let idx: usize = id
         .parse()
@@ -600,6 +709,7 @@ pub async fn update_weight(
     // Get the current config and create a new one with updated weight
     let current_config = u.config();
     let upstream_name = current_config.name.to_string();
+    let old_weight = current_config.weight;
     let new_config = prism_core::types::UpstreamConfig {
         weight: request.weight,
         url: current_config.url.clone(),
@@ -622,7 +732,17 @@ pub async fn update_weight(
         return Err((StatusCode::NOT_FOUND, "Upstream not found".to_string()));
     }
 
+    // Audit log with before/after weight
+    let details = serde_json::json!({
+        "weight": {
+            "old": old_weight,
+            "new": request.weight
+        }
+    });
+    audit::log_update("upstream", &id, Some(addr), Some(details));
+
     tracing::info!(
+        correlation_id = ?correlation_id,
         upstream = %upstream_name,
         new_weight = request.weight,
         "updated upstream weight"
@@ -824,7 +944,7 @@ pub async fn get_request_distribution(
 
 /// POST /admin/upstreams
 ///
-/// Creates a new runtime upstream.
+/// Creates a new dynamic upstream.
 #[utoipa::path(
     post,
     path = "/admin/upstreams",
@@ -838,11 +958,23 @@ pub async fn get_request_distribution(
 )]
 pub async fn create_upstream(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Json(request): Json<crate::admin::types::CreateUpstreamRequest>,
 ) -> Result<Json<UpstreamResponse>, (StatusCode, String)> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
+
+    // Validate input
+    validate_name(&request.name).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    validate_url(&request.url).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    if let Some(ref ws_url) = request.ws_url {
+        validate_url(ws_url).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    }
+    validate_weight(request.weight).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+
     // Convert to core request
     let core_request = CoreCreateUpstreamRequest {
-        name: request.name,
+        name: request.name.clone(),
         url: request.url,
         ws_url: request.ws_url,
         weight: request.weight,
@@ -850,31 +982,35 @@ pub async fn create_upstream(
         timeout_seconds: request.timeout_seconds,
     };
 
-    // Create runtime upstream
-    let runtime_config = state
+    // Create dynamic upstream
+    let dynamic_config = state
         .proxy_engine
         .get_upstream_manager()
-        .add_runtime_upstream(core_request)
+        .add_dynamic_upstream(core_request)
         .map_err(|e| (StatusCode::BAD_REQUEST, e.to_string()))?;
 
     // Convert to response
     let response = UpstreamResponse {
-        id: runtime_config.id,
-        name: runtime_config.name,
-        url: mask_url(&runtime_config.url),
-        ws_url: runtime_config.ws_url.map(|u| mask_url(&u)),
-        weight: runtime_config.weight,
-        chain_id: runtime_config.chain_id,
-        timeout_seconds: runtime_config.timeout_seconds,
-        enabled: runtime_config.enabled,
-        created_at: runtime_config.created_at,
-        updated_at: runtime_config.updated_at,
+        id: dynamic_config.id.clone(),
+        name: dynamic_config.name.clone(),
+        url: mask_url(&dynamic_config.url),
+        ws_url: dynamic_config.ws_url.as_ref().map(|u| mask_url(u)),
+        weight: dynamic_config.weight,
+        chain_id: dynamic_config.chain_id,
+        timeout_seconds: dynamic_config.timeout_seconds,
+        enabled: dynamic_config.enabled,
+        created_at: dynamic_config.created_at,
+        updated_at: dynamic_config.updated_at,
     };
 
+    // Audit log the creation
+    audit::log_create("upstream", &response.id, Some(addr));
+
     tracing::info!(
+        correlation_id = ?correlation_id,
         id = %response.id,
         name = %response.name,
-        "created runtime upstream via admin API"
+        "created dynamic upstream via admin API"
     );
 
     Ok(Json(response))
@@ -882,7 +1018,7 @@ pub async fn create_upstream(
 
 /// PUT /admin/upstreams/:id
 ///
-/// Updates an existing runtime upstream.
+/// Updates an existing dynamic upstream.
 #[utoipa::path(
     put,
     path = "/admin/upstreams/{id}",
@@ -900,18 +1036,33 @@ pub async fn create_upstream(
 )]
 pub async fn update_upstream(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<String>,
     Json(request): Json<crate::admin::types::UpdateUpstreamRequest>,
 ) -> Result<Json<UpstreamResponse>, (StatusCode, String)> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
+
+    // Validate optional fields if provided
+    if let Some(ref name) = request.name {
+        validate_name(name).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(ref url) = request.url {
+        validate_url(url).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    }
+    if let Some(weight) = request.weight {
+        validate_weight(weight).map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    }
+
     // Check if this is a config-based upstream
     let manager = state.proxy_engine.get_upstream_manager();
-    let registry = manager.get_runtime_registry();
+    let registry = manager.get_dynamic_registry();
 
-    // Verify it exists and is a runtime upstream
+    // Verify it exists and is a dynamic upstream
     if registry.get(&id).is_none() {
         return Err((
             StatusCode::NOT_FOUND,
-            "Runtime upstream not found. Config-based upstreams cannot be modified via API."
+            "Dynamic upstream not found. Config-based upstreams cannot be modified via API."
                 .to_string(),
         ));
     }
@@ -924,8 +1075,8 @@ pub async fn update_upstream(
         enabled: request.enabled,
     };
 
-    // Update runtime upstream
-    let runtime_config = manager.update_runtime_upstream(&id, &core_request).map_err(|e| {
+    // Update dynamic upstream
+    let dynamic_config = manager.update_dynamic_upstream(&id, &core_request).map_err(|e| {
         if e.to_string().contains("not found") {
             (StatusCode::NOT_FOUND, e.to_string())
         } else {
@@ -935,22 +1086,26 @@ pub async fn update_upstream(
 
     // Convert to response
     let response = UpstreamResponse {
-        id: runtime_config.id,
-        name: runtime_config.name,
-        url: mask_url(&runtime_config.url),
-        ws_url: runtime_config.ws_url.map(|u| mask_url(&u)),
-        weight: runtime_config.weight,
-        chain_id: runtime_config.chain_id,
-        timeout_seconds: runtime_config.timeout_seconds,
-        enabled: runtime_config.enabled,
-        created_at: runtime_config.created_at,
-        updated_at: runtime_config.updated_at,
+        id: dynamic_config.id.clone(),
+        name: dynamic_config.name.clone(),
+        url: mask_url(&dynamic_config.url),
+        ws_url: dynamic_config.ws_url.as_ref().map(|u| mask_url(u)),
+        weight: dynamic_config.weight,
+        chain_id: dynamic_config.chain_id,
+        timeout_seconds: dynamic_config.timeout_seconds,
+        enabled: dynamic_config.enabled,
+        created_at: dynamic_config.created_at,
+        updated_at: dynamic_config.updated_at,
     };
 
+    // Audit log the update
+    audit::log_update("upstream", &response.id, Some(addr), None);
+
     tracing::info!(
+        correlation_id = ?correlation_id,
         id = %response.id,
         name = %response.name,
-        "updated runtime upstream via admin API"
+        "updated dynamic upstream via admin API"
     );
 
     Ok(Json(response))
@@ -958,7 +1113,7 @@ pub async fn update_upstream(
 
 /// DELETE /admin/upstreams/:id
 ///
-/// Deletes a runtime upstream.
+/// Deletes a dynamic upstream.
 #[utoipa::path(
     delete,
     path = "/admin/upstreams/{id}",
@@ -974,23 +1129,26 @@ pub async fn update_upstream(
 )]
 pub async fn delete_upstream(
     State(state): State<AdminState>,
+    headers: HeaderMap,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     Path(id): Path<String>,
 ) -> Result<Json<SuccessResponse>, (StatusCode, String)> {
+    let correlation_id = crate::admin::get_correlation_id(&headers);
     // Check if this is a config-based upstream
     let manager = state.proxy_engine.get_upstream_manager();
-    let registry = manager.get_runtime_registry();
+    let registry = manager.get_dynamic_registry();
 
-    // Verify it exists and is a runtime upstream
+    // Verify it exists and is a dynamic upstream
     if registry.get(&id).is_none() {
         return Err((
             StatusCode::NOT_FOUND,
-            "Runtime upstream not found. Config-based upstreams cannot be deleted via API."
+            "Dynamic upstream not found. Config-based upstreams cannot be deleted via API."
                 .to_string(),
         ));
     }
 
-    // Remove runtime upstream
-    manager.remove_runtime_upstream(&id).map_err(|e| {
+    // Remove dynamic upstream
+    manager.remove_dynamic_upstream(&id).map_err(|e| {
         if e.to_string().contains("not found") {
             (StatusCode::NOT_FOUND, e.to_string())
         } else {
@@ -998,7 +1156,14 @@ pub async fn delete_upstream(
         }
     })?;
 
-    tracing::info!(id = %id, "deleted runtime upstream via admin API");
+    // Audit log the deletion
+    audit::log_delete("upstream", &id, Some(addr));
+
+    tracing::info!(
+        correlation_id = ?correlation_id,
+        id = %id,
+        "deleted dynamic upstream via admin API"
+    );
 
     Ok(Json(SuccessResponse { success: true }))
 }
