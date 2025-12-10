@@ -462,7 +462,7 @@ pub struct BlockBody {
     pub transactions: Vec<[u8; 32]>,
 }
 
-/// Transaction record
+/// Transaction record supporting all Ethereum transaction types
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransactionRecord {
     pub hash: [u8; 32],
@@ -472,11 +472,22 @@ pub struct TransactionRecord {
     pub from: [u8; 20],
     pub to: Option<[u8; 20]>,
     pub value: [u8; 32],
-    pub gas_price: [u8; 32],
+    /// Transaction type (0 = legacy, 1 = EIP-2930, 2 = EIP-1559, 3 = EIP-4844)
+    pub tx_type: Option<u8>,
+    /// Gas price for legacy/EIP-2930 transactions
+    pub gas_price: Option<[u8; 32]>,
+    /// Max fee per gas for EIP-1559/EIP-4844 transactions
+    pub max_fee_per_gas: Option<[u8; 32]>,
+    /// Max priority fee per gas for EIP-1559/EIP-4844 transactions
+    pub max_priority_fee_per_gas: Option<[u8; 32]>,
+    /// Max fee per blob gas for EIP-4844 transactions
+    pub max_fee_per_blob_gas: Option<[u8; 32]>,
     pub gas_limit: u64,
     pub nonce: u64,
     pub data: Vec<u8>,
-    pub v: u8,
+    /// Signature recovery id. For EIP-155 legacy transactions: chainId * 2 + 35/36.
+    /// For EIP-2930+ transactions: just the parity (0 or 1).
+    pub v: u64,
     pub r: [u8; 32],
     pub s: [u8; 32],
 }

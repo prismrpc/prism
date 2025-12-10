@@ -146,10 +146,14 @@ impl BlocksHandler {
     ///
     /// Validates block data integrity before caching to prevent cache poisoning.
     /// Converts JSON block data to header and body records, validates integrity,
-    /// then stores them in cache only if validation passes.
+    /// then stores them in cache only if validation passes. Also caches individual
+    /// transactions if full transaction objects are present.
     async fn cache_block_from_response(&self, block_json: &serde_json::Value) {
         use crate::cache::{
-            converter::{json_block_to_block_body, json_block_to_block_header},
+            converter::{
+                json_block_to_block_body, json_block_to_block_header,
+                json_transaction_to_transaction_record,
+            },
             validation::validate_block_response,
         };
 
@@ -158,12 +162,41 @@ impl BlocksHandler {
             return;
         }
 
+        let block_number = block_json
+            .get("number")
+            .and_then(|v| v.as_str())
+            .and_then(|s| crate::utils::BlockParameter::parse_number(s));
+
         if let Some(header) = json_block_to_block_header(block_json) {
             if let Some(body) = json_block_to_block_body(block_json) {
                 self.ctx.cache_manager.insert_header(header).await;
                 self.ctx.cache_manager.insert_body(body).await;
             } else {
                 tracing::warn!("failed to convert json block to block body, skipping body cache");
+            }
+        }
+
+        // Cache individual transactions if full objects are present
+        if let Some(transactions) = block_json.get("transactions").and_then(|v| v.as_array()) {
+            let mut cached_count = 0;
+            for tx_json in transactions {
+                // Skip if transaction is just a hash string
+                if tx_json.is_string() {
+                    continue;
+                }
+
+                if let Some(tx) = json_transaction_to_transaction_record(tx_json) {
+                    self.ctx.cache_manager.transaction_cache.insert_transaction(tx).await;
+                    cached_count += 1;
+                }
+            }
+
+            if cached_count > 0 {
+                debug!(
+                    block_number = ?block_number,
+                    transaction_count = cached_count,
+                    "cached transactions from block response"
+                );
             }
         }
     }

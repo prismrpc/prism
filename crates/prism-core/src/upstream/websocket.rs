@@ -746,6 +746,9 @@ impl WebSocketHandler {
     }
 
     /// Caches block header, body, and transactions from block data.
+    ///
+    /// Handles both full transaction objects and transaction hashes. When we request
+    /// `fullTransactions=true`, we expect objects, but some providers may return hashes.
     async fn cache_block_data(
         block_number: u64,
         upstream_name: &str,
@@ -758,22 +761,53 @@ impl WebSocketHandler {
         }
 
         if let Some(body) = json_block_to_block_body(block_data) {
+            let tx_count = body.transactions.len();
             cache_manager.insert_body(body).await;
-            tracing::debug!(block_number = block_number, upstream = upstream_name, "cached body");
-        }
-
-        if let Some(transactions) = block_data.get("transactions").and_then(|v| v.as_array()) {
-            for tx_json in transactions {
-                if let Some(tx) = json_transaction_to_transaction_record(tx_json) {
-                    cache_manager.transaction_cache.insert_transaction(tx).await;
-                }
-            }
             tracing::debug!(
                 block_number = block_number,
                 upstream = upstream_name,
-                transaction_count = transactions.len(),
-                "cached transactions"
+                transaction_hashes = tx_count,
+                "cached body with transaction hashes"
             );
+        }
+
+        if let Some(transactions) = block_data.get("transactions").and_then(|v| v.as_array()) {
+            let total_count = transactions.len();
+            let mut cached_count = 0;
+            let mut hash_only_count = 0;
+
+            for tx_json in transactions {
+                if tx_json.is_string() {
+                    // Transaction is a hash string, not a full object
+                    hash_only_count += 1;
+                    continue;
+                }
+
+                if let Some(tx) = json_transaction_to_transaction_record(tx_json) {
+                    cache_manager.transaction_cache.insert_transaction(tx).await;
+                    cached_count += 1;
+                }
+            }
+
+            // Warn if we got hashes when we expected full objects (BUG detection)
+            if hash_only_count > 0 && cached_count == 0 && total_count > 0 {
+                tracing::warn!(
+                    block_number = block_number,
+                    upstream = upstream_name,
+                    total_transactions = total_count,
+                    hash_only_count = hash_only_count,
+                    "BUG: eth_getBlockByNumber with fullTransactions=true returned hashes instead of objects"
+                );
+            } else {
+                tracing::debug!(
+                    block_number = block_number,
+                    upstream = upstream_name,
+                    total_transactions = total_count,
+                    cached_full_objects = cached_count,
+                    hash_only = hash_only_count,
+                    "cached transactions from block"
+                );
+            }
         }
     }
 

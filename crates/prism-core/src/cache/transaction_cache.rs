@@ -302,15 +302,25 @@ impl TransactionCache {
     /// Prunes transactions to stay within capacity by evicting from oldest blocks first.
     ///
     /// This strategy is optimal for blockchain caches since newer blocks are accessed
-    /// more frequently than older ones.
+    /// more frequently than older ones. Uses partial sorting for O(n) complexity
+    /// when evicting a small number of blocks.
     fn prune_transactions(&self) {
         let to_evict = self.transactions_by_hash.len().saturating_sub(self.max_transactions);
         if to_evict == 0 {
             return;
         }
 
-        // Collect and sort block numbers (oldest first)
+        // Collect block numbers
         let mut blocks: Vec<u64> = self.block_transactions.iter().map(|e| *e.key()).collect();
+
+        // Estimate how many blocks we need to evict (assume ~10 txs per block average)
+        // Use partial sort if we only need a few blocks - O(n) vs O(n log n) for full sort
+        let blocks_to_check = (to_evict / 10).max(1).min(blocks.len());
+        if blocks_to_check < blocks.len() / 4 && blocks.len() > 16 {
+            // Partial sort: only find the k smallest elements
+            blocks.select_nth_unstable(blocks_to_check);
+            blocks.truncate(blocks_to_check + 1);
+        }
         blocks.sort_unstable();
 
         let mut evicted = 0;
@@ -387,7 +397,11 @@ mod tests {
             from: [3u8; 20],
             to: Some([4u8; 20]),
             value: [5u8; 32],
-            gas_price: [6u8; 32],
+            tx_type: Some(0),
+            gas_price: Some([6u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![1, 2, 3],
@@ -449,7 +463,11 @@ mod tests {
             from: [3u8; 20],
             to: Some([4u8; 20]),
             value: [5u8; 32],
-            gas_price: [6u8; 32],
+            tx_type: Some(0),
+            gas_price: Some([6u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],
@@ -501,7 +519,11 @@ mod tests {
             from: [3u8; 20],
             to: Some([4u8; 20]),
             value: [5u8; 32],
-            gas_price: [6u8; 32],
+            tx_type: Some(0),
+            gas_price: Some([6u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],
@@ -532,7 +554,11 @@ mod tests {
             from: [1u8; 20],
             to: Some([2u8; 20]),
             value: [0u8; 32],
-            gas_price: [1u8; 32],
+            tx_type: Some(0),
+            gas_price: Some([1u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],

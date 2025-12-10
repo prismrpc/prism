@@ -68,6 +68,22 @@ pub fn hex_to_u32(s: &str) -> Option<u32> {
     }
 }
 
+/// Parses hex string to a 32-byte big-endian value (U256).
+/// Handles variable-length hex strings by right-aligning (padding left with zeros).
+/// Used for values like gas prices, values, etc. that may be short (e.g., "0x0", "0x3b9aca00").
+#[must_use]
+pub fn hex_to_u256(s: &str) -> Option<[u8; 32]> {
+    let hex_str = s.strip_prefix("0x").unwrap_or(s);
+    let bytes = hex::decode(hex_str).ok()?;
+    if bytes.len() > 32 {
+        return None;
+    }
+    let mut result = [0u8; 32];
+    // Right-align: copy bytes to the end of the array
+    result[32 - bytes.len()..].copy_from_slice(&bytes);
+    Some(result)
+}
+
 // --- Log Conversions ---
 
 /// Extracts log identifier from JSON-RPC log entry.
@@ -176,13 +192,25 @@ pub fn json_block_to_block_header(block: &Value) -> Option<BlockHeader> {
 }
 
 /// Extracts transaction hashes from JSON-RPC block to create `BlockBody`.
-/// Only works with blocks containing transaction hashes (not full tx objects).
+/// Handles both transaction hash strings and full transaction objects.
 #[must_use]
 pub fn json_block_to_block_body(block: &Value) -> Option<BlockBody> {
     let hash = hex_to_array::<32>(block.get("hash")?.as_str()?)?;
     let transactions = block.get("transactions")?.as_array()?;
-    let tx_hashes: Vec<_> =
-        transactions.iter().filter_map(|tx| hex_to_array::<32>(tx.as_str()?)).collect();
+    let tx_hashes: Vec<_> = transactions
+        .iter()
+        .filter_map(|tx| {
+            // Handle both string hashes and full transaction objects
+            if let Some(hash_str) = tx.as_str() {
+                hex_to_array::<32>(hash_str)
+            } else if let Some(obj) = tx.as_object() {
+                // Full transaction object - extract hash field
+                obj.get("hash").and_then(|h| h.as_str()).and_then(hex_to_array::<32>)
+            } else {
+                None
+            }
+        })
+        .collect();
     Some(BlockBody { hash, transactions: tx_hashes })
 }
 
@@ -265,29 +293,50 @@ pub fn block_header_and_body_to_json(header: &BlockHeader, body: &BlockBody) -> 
 // --- Transaction Conversions ---
 
 /// Converts JSON-RPC transaction to internal format.
-/// Handles optional fields (null for pending transactions).
+/// Handles optional fields (null for pending transactions) and all transaction types
+/// (Legacy, EIP-2930, EIP-1559, EIP-4844).
 pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionRecord> {
-    let hash = hex_to_array::<32>(tx.get("hash")?.as_str()?)?;
+    // Macro to extract required fields with better error handling
+    macro_rules! require_field {
+        ($field:expr, $parser:expr) => {
+            tx.get($field).and_then(|v| v.as_str()).and_then($parser)?
+        };
+    }
+
+    let hash = require_field!("hash", hex_to_array::<32>);
+    let from = require_field!("from", hex_to_array::<20>);
+    let value = require_field!("value", hex_to_u256);
+    let gas_limit = require_field!("gas", hex_to_u64);
+    let nonce = require_field!("nonce", hex_to_u64);
+    let data = require_field!("input", hex_to_bytes);
+
+    // Optional fields
     let block_hash = tx.get("blockHash").and_then(|v| v.as_str()).and_then(hex_to_array::<32>);
     let block_number = tx.get("blockNumber").and_then(|v| v.as_str()).and_then(hex_to_u64);
     let transaction_index =
         tx.get("transactionIndex").and_then(|v| v.as_str()).and_then(hex_to_u32);
-    let from = hex_to_array::<20>(tx.get("from")?.as_str()?)?;
     let to = tx.get("to").and_then(|v| v.as_str()).and_then(hex_to_array::<20>);
-    let value = hex_to_array::<32>(tx.get("value")?.as_str()?)?;
-    let gas_price = hex_to_array::<32>(tx.get("gasPrice")?.as_str()?)?;
-    let gas_limit = hex_to_u64(tx.get("gas")?.as_str()?)?;
-    let nonce = hex_to_u64(tx.get("nonce")?.as_str()?)?;
-    let data = hex_to_bytes(tx.get("input")?.as_str()?)?;
 
-    // v is u8: parse as hex with 0x prefix, otherwise decimal
+    // Transaction type (0 = legacy, 1 = EIP-2930, 2 = EIP-1559, 3 = EIP-4844)
+    #[allow(clippy::cast_possible_truncation)]
+    let tx_type = tx.get("type").and_then(|v| v.as_str()).and_then(hex_to_u64).map(|t| t as u8);
+
+    // Gas pricing fields - legacy uses gasPrice, EIP-1559+ uses maxFeePerGas/maxPriorityFeePerGas
+    let gas_price = tx.get("gasPrice").and_then(|v| v.as_str()).and_then(hex_to_u256);
+    let max_fee_per_gas = tx.get("maxFeePerGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
+    let max_priority_fee_per_gas =
+        tx.get("maxPriorityFeePerGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
+    let max_fee_per_blob_gas =
+        tx.get("maxFeePerBlobGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
+
+    // v is u64 to support EIP-155 replay protection (chainId * 2 + 35/36 can exceed u8)
     let v_str = tx.get("v")?.as_str()?;
     let v = v_str
         .strip_prefix("0x")
-        .map_or_else(|| v_str.parse::<u8>().ok(), |hex| u8::from_str_radix(hex, 16).ok())?;
+        .map_or_else(|| v_str.parse::<u64>().ok(), |hex| u64::from_str_radix(hex, 16).ok())?;
 
-    let r = hex_to_array::<32>(tx.get("r")?.as_str()?)?;
-    let s = hex_to_array::<32>(tx.get("s")?.as_str()?)?;
+    let r = require_field!("r", hex_to_u256);
+    let s = require_field!("s", hex_to_u256);
 
     Some(TransactionRecord {
         hash,
@@ -297,7 +346,11 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
         from,
         to,
         value,
+        tx_type,
         gas_price,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        max_fee_per_blob_gas,
         gas_limit,
         nonce,
         data,
@@ -310,6 +363,7 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
 /// Converts cached transaction back to JSON-RPC format.
 ///
 /// Uses optimized hex formatting (`format_hex_large`) for large input data (>256 bytes).
+/// Handles all transaction types (Legacy, EIP-2930, EIP-1559, EIP-4844).
 #[must_use]
 pub fn transaction_record_to_json(transaction: &TransactionRecord) -> Value {
     let mut tx = serde_json::Map::new();
@@ -346,7 +400,30 @@ pub fn transaction_record_to_json(transaction: &TransactionRecord) -> Value {
     }
 
     tx.insert("value".to_string(), Value::String(format_hash32(&transaction.value)));
-    tx.insert("gasPrice".to_string(), Value::String(format_hash32(&transaction.gas_price)));
+
+    // Transaction type
+    if let Some(tx_type) = transaction.tx_type {
+        tx.insert("type".to_string(), Value::String(format_hex_u64(u64::from(tx_type))));
+    }
+
+    // Gas pricing - include gasPrice for all types for compatibility
+    if let Some(gas_price) = transaction.gas_price {
+        tx.insert("gasPrice".to_string(), Value::String(format_hash32(&gas_price)));
+    }
+
+    // EIP-1559 fields
+    if let Some(max_fee) = transaction.max_fee_per_gas {
+        tx.insert("maxFeePerGas".to_string(), Value::String(format_hash32(&max_fee)));
+    }
+    if let Some(max_priority) = transaction.max_priority_fee_per_gas {
+        tx.insert("maxPriorityFeePerGas".to_string(), Value::String(format_hash32(&max_priority)));
+    }
+
+    // EIP-4844 blob gas
+    if let Some(max_blob_fee) = transaction.max_fee_per_blob_gas {
+        tx.insert("maxFeePerBlobGas".to_string(), Value::String(format_hash32(&max_blob_fee)));
+    }
+
     tx.insert("gas".to_string(), Value::String(format_hex_u64(transaction.gas_limit)));
     tx.insert("nonce".to_string(), Value::String(format_hex_u64(transaction.nonce)));
 
@@ -359,7 +436,7 @@ pub fn transaction_record_to_json(transaction: &TransactionRecord) -> Value {
         }),
     );
 
-    tx.insert("v".to_string(), Value::String(format_hex_u64(u64::from(transaction.v))));
+    tx.insert("v".to_string(), Value::String(format_hex_u64(transaction.v)));
     tx.insert("r".to_string(), Value::String(format_hash32(&transaction.r)));
     tx.insert("s".to_string(), Value::String(format_hash32(&transaction.s)));
 
@@ -697,7 +774,11 @@ mod tests {
             from: [0xCC; 20],
             to: Some([0xDD; 20]),
             value: [0xEE; 32],
-            gas_price: [0xFF; 32],
+            tx_type: Some(0),
+            gas_price: Some([0xFF; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 42,
             data: vec![0x11; 100],
@@ -960,7 +1041,7 @@ mod tests {
 
     #[test]
     fn test_json_block_to_block_body_with_full_tx_objects() {
-        // When transactions are full objects (not hashes), they should be skipped
+        // When transactions are full objects, we extract their hash field
         let block = serde_json::json!({
             "hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "transactions": [
@@ -970,8 +1051,11 @@ mod tests {
         });
         let body = json_block_to_block_body(&block);
         assert!(body.is_some());
-        // Full tx object is skipped (as_str returns None)
-        assert_eq!(body.unwrap().transactions.len(), 1);
+        // Both tx object (hash extracted) and hash string are included
+        let body = body.unwrap();
+        assert_eq!(body.transactions.len(), 2);
+        assert_eq!(body.transactions[0], [0x11; 32]);
+        assert_eq!(body.transactions[1], [0x22; 32]);
     }
 
     #[test]
@@ -1207,7 +1291,7 @@ mod tests {
 
     #[test]
     fn test_transaction_record_to_json_null_fields() {
-        // Test null field serialization (lines 424, 430, 439, 447)
+        // Test null field serialization
         let transaction = TransactionRecord {
             hash: [0xAA; 32],
             block_hash: None,
@@ -1216,7 +1300,11 @@ mod tests {
             from: [0xCC; 20],
             to: None,
             value: [0; 32],
-            gas_price: [0; 32],
+            tx_type: None,
+            gas_price: Some([0; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],
@@ -1235,7 +1323,7 @@ mod tests {
 
     #[test]
     fn test_transaction_record_to_json_large_input_data() {
-        // Test format_hex_large path for data > 256 bytes (lines 457-461)
+        // Test format_hex_large path for data > 256 bytes
         let transaction = TransactionRecord {
             hash: [0xAA; 32],
             block_hash: Some([0xBB; 32]),
@@ -1244,7 +1332,11 @@ mod tests {
             from: [0xCC; 20],
             to: Some([0xDD; 20]),
             value: [0; 32],
-            gas_price: [0; 32],
+            tx_type: Some(0),
+            gas_price: Some([0; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 500_000,
             nonce: 0,
             data: vec![0xAB; 500], // > 256 bytes triggers format_hex_large
@@ -1261,7 +1353,7 @@ mod tests {
 
     #[test]
     fn test_transaction_record_to_json_small_input_data() {
-        // Test format_hex path for data <= 256 bytes (line 460)
+        // Test format_hex path for data <= 256 bytes
         let transaction = TransactionRecord {
             hash: [0xAA; 32],
             block_hash: Some([0xBB; 32]),
@@ -1270,7 +1362,11 @@ mod tests {
             from: [0xCC; 20],
             to: Some([0xDD; 20]),
             value: [0; 32],
-            gas_price: [0; 32],
+            tx_type: Some(0),
+            gas_price: Some([0; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 100_000,
             nonce: 0,
             data: vec![0xAB; 100], // <= 256 bytes uses format_hex
