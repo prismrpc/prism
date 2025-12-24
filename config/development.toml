@@ -16,17 +16,12 @@ request_timeout_seconds = 30
 
 [admin]
 enabled = true
-bind_address = "127.0.0.1"  # Default: localhost only (for security)
-port = 3031                 # Default: 3031
-prometheus_url = "http://localhost:9090"  # Prometheus server for historical metrics
-# SECURITY: Admin token is intentionally not set here.
-# In development, use PRISM_ADMIN__ADMIN_TOKEN env var or leave unset for no auth.
-# In production, ALWAYS set via environment variable: PRISM_ADMIN__ADMIN_TOKEN=your-secure-token
-# admin_token = ""
-rate_limit_max_tokens = 100  # Burst capacity: 100 requests
-rate_limit_refill_rate = 10  # Sustained rate: 10 requests/sec
+bind_address = "127.0.0.1"
+port = 3031
+prometheus_url = "http://localhost:9090"
+rate_limit_max_tokens = 100
+rate_limit_refill_rate = 10
 
-# Your current RPC providers from .env converted to clean TOML format
 [upstreams]
 [[upstreams.providers]]
 name = "mevblocker"
@@ -75,8 +70,8 @@ cache_ttl_seconds = 300
 [cache.manager_config]
 retain_blocks = 1000
 enable_auto_cleanup = true
-cleanup_interval_seconds = 300  # 5 minutes
-cleanup_every_n_blocks = 100    # Trigger cleanup every 100 blocks
+cleanup_interval_seconds = 300
+cleanup_every_n_blocks = 100
 
 [cache.manager_config.log_cache]
 chunk_size = 1000
@@ -86,17 +81,13 @@ safety_depth = 12
 
 [cache.manager_config.block_cache]
 hot_window_size = 200
-# Memory estimation: headers ~500 bytes each, bodies ~2KB each
-# Target: ~20MB total (10MB headers + 10MB bodies)
-max_headers = 20000    # 20000 × 500 bytes ≈ 10 MB
-max_bodies = 5000      # 5000 × 2048 bytes ≈ 10 MB
+max_headers = 20000
+max_bodies = 5000
 safety_depth = 12
 
 [cache.manager_config.transaction_cache]
-# Memory estimation: transactions ~300 bytes each, receipts ~200 bytes each
-# Target: ~8MB total (4MB transactions + 4MB receipts)
-max_transactions = 40000   # 40000 × 300 bytes ≈ 12 MB
-max_receipts = 40000       # 40000 × 200 bytes ≈ 8 MB
+max_transactions = 40000
+max_receipts = 40000
 safety_depth = 12
 
 [cache.manager_config.reorg_manager]

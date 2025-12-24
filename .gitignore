@@ -6,5 +6,3 @@
 .vscode
 /codeql-db-rust
 /coverage
-.cursor/
-/docs/internal

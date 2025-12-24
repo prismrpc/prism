@@ -7,7 +7,6 @@ bind_port = 3030
 max_concurrent_requests = 100
 request_timeout_seconds = 30
 
-# Your current RPC providers from .env converted to clean TOML format
 [upstreams]
 [[upstreams.providers]]
 name = "mevblocker"

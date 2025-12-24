@@ -17,27 +17,17 @@
 environment = "production"
 
 [server]
-# IMPORTANT: Use 0.0.0.0 to listen on all interfaces in containers
 bind_address = "0.0.0.0"
 bind_port = 3030
 max_concurrent_requests = 500
 request_timeout_seconds = 30
-
-# =============================================================================
-# Upstream RPC Providers
-# =============================================================================
-# Configure your actual RPC endpoints here.
-# These public endpoints are for demonstration only - replace with your own.
-# =============================================================================
 
 [upstreams]
 
 [[upstreams.providers]]
 name = "primary"
 chain_id = 1
-# Replace with your actual RPC endpoint
 https_url = "https://eth-mainnet.your-provider.com/YOUR_API_KEY"
-# Optional: WebSocket for chain tip tracking
 wss_url = "wss://eth-mainnet.your-provider.com/YOUR_API_KEY"
 weight = 2
 timeout_seconds = 30
@@ -53,10 +43,6 @@ weight = 1
 timeout_seconds = 30
 circuit_breaker_threshold = 3
 circuit_breaker_timeout_seconds = 30
-
-# =============================================================================
-# Caching Configuration
-# =============================================================================
 
 [cache]
 enabled = true
@@ -90,37 +76,16 @@ safety_depth = 64
 max_reorg_depth = 256
 reorg_detection_threshold = 3
 
-# =============================================================================
-# Health Check Configuration
-# =============================================================================
-
 [health_check]
 interval_seconds = 60
 
-# =============================================================================
-# Authentication Configuration
-# =============================================================================
-# When enabled, API key authentication is required.
-# Database is stored in a Docker volume for persistence.
-
 [auth]
 enabled = true
-# Path inside the container - mount a volume to /app/db
 database_url = "sqlite:///app/db/auth.db"
-
-# =============================================================================
-# Metrics Configuration
-# =============================================================================
 
 [metrics]
 enabled = true
 prometheus_port = 9090
-
-# =============================================================================
-# Logging Configuration
-# =============================================================================
-# JSON format is recommended for Docker deployments.
-# Enables structured logging for log aggregation tools (Loki, ELK, etc.)
 
 [logging]
 level = "info"
