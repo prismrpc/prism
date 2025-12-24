@@ -135,7 +135,7 @@ command = "cargo"
 args = ["run", "--bin", "server"]
 
 [tasks.run-server-dev]
-description = "Run server with development config (pretty logs, admin enabled on 3031)"
+description = "Run server with development config (pretty logs, admin disabled)"
 command = "cargo"
 args = ["run", "--bin", "server"]
 env = { "PRISM_CONFIG" = "config/development.toml" }
@@ -146,10 +146,16 @@ command = "cargo"
 args = ["run", "--release", "--bin", "server"]
 
 [tasks.run-server-admin]
-description = "Run server with admin API enabled (development config)"
+description = "Run server with admin API enabled on port 3031"
 command = "cargo"
 args = ["run", "--bin", "server"]
-env = { "PRISM_CONFIG" = "config/development.toml", "RUST_LOG" = "warn,prism_core=info,server=info,admin=debug" }
+env = { "PRISM_CONFIG" = "config/development.admin.toml", "RUST_LOG" = "warn,prism_core=info,server=info,admin=debug" }
+
+[tasks.run-server-admin-release]
+description = "Run server in release mode with admin API enabled"
+command = "cargo"
+args = ["run", "--release", "--bin", "server"]
+env = { "PRISM_CONFIG" = "config/development.admin.toml" }
 
 [tasks.run-cli]
 description = "Run the CLI tool (use -- to pass arguments)"
@@ -695,11 +701,12 @@ echo "  bench-save     - Run and save baseline"
 echo "  bench-compare  - Compare against baseline"
 echo ""
 echo "Running the Server:"
-echo "  run-server         - Production config (JSON logs, admin disabled)"
-echo "  run-server-dev     - Development config (pretty logs, admin on 3031)"
-echo "  run-server-admin   - Development config with admin debug logging"
-echo "  run-server-release - Release mode with production config"
-echo "  run-server-devnet  - Devnet config (admin enabled on 3031)"
+echo "  run-server              - Production config (JSON logs, admin disabled)"
+echo "  run-server-dev          - Development config (pretty logs, admin disabled)"
+echo "  run-server-admin        - Development config with admin API on port 3031"
+echo "  run-server-admin-release - Release mode with admin API enabled"
+echo "  run-server-release      - Release mode with production config"
+echo "  run-server-devnet       - Devnet config (admin enabled on 3031)"
 echo ""
 echo "CLI Tools:"
 echo "  run-cli        - Run CLI (use -- for args)"
@@ -718,7 +725,7 @@ echo "  devnet-logs    - Show devnet logs"
 echo "  devnet-mine    - Mine blocks"
 echo "  devnet-fork    - Start with mainnet fork"
 echo ""
-echo "Admin API (requires server running with admin enabled):"
+echo "Admin API (start server with: cargo make run-server-admin):"
 echo "  admin-swagger      - Open Swagger UI (http://localhost:3031)"
 echo "  admin-health       - Check admin API health"
 echo "  admin-status       - Get system status"

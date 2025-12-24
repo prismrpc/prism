@@ -1,12 +1,9 @@
-# Prism RPC Aggregator Configuration - Development
-# This configuration is optimized for local development with pretty logging
-# and debug-friendly settings. Admin API is disabled by default.
-#
-# For Admin API development, use: config/development.admin.toml
+# Prism RPC Aggregator Configuration - Development with Admin API
+# This configuration enables the Admin API for development and testing.
 #
 # Usage:
-#   PRISM_CONFIG=config/development.toml cargo run --bin server
-#   or: cargo make run-server-dev
+#   PRISM_CONFIG=config/development.admin.toml cargo run --bin server
+#   or: cargo make run-server-admin
 
 environment = "development"
 
@@ -16,10 +13,13 @@ bind_port = 3030
 max_concurrent_requests = 100
 request_timeout_seconds = 30
 
-# Admin API disabled by default for core development
-# Use config/development.admin.toml to enable admin API
 [admin]
-enabled = false
+enabled = true
+bind_address = "127.0.0.1"
+port = 3031
+prometheus_url = "http://localhost:9090"
+rate_limit_max_tokens = 100
+rate_limit_refill_rate = 10
 
 [upstreams]
 [[upstreams.providers]]

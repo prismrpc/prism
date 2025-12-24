@@ -28,6 +28,7 @@ It sits between your services and one or many upstream RPC providers. Your apps 
 | **Chain View** | Unified view of chain tip and finalized blocks |
 | **Auth** | Optional authentication and rate limiting |
 | **Metrics** | Prometheus metrics for observability |
+| **Admin API** | Optional management API for monitoring, upstream control, and alerts |
 
 The goal is to move all the messy RPC logic into one place and keep your application code simple. Instead of each service building its own cache and retry logic, you point everything at **Prism** and let it handle caching, routing and failure modes.
 
@@ -105,14 +106,20 @@ For a complete configuration with consensus, hedging and scoring options, see `c
 Use `cargo make` tasks for a smooth workflow.
 
 ```bash
-# start with default config
+# Development (pretty logs, admin disabled)
+cargo make run-server-dev
+
+# Production (JSON logs, admin disabled)
 cargo make run-server
 
-# start release server
+# Release mode
 cargo make run-server-release
 
-# use a custom config file
-PRISM_CONFIG=config/development.toml cargo make run-server
+# With Admin API enabled (port 3031)
+cargo make run-server-admin
+
+# Custom config file
+PRISM_CONFIG=config/myconfig.toml cargo make run-server
 ```
 
 The server exposes the following HTTP endpoints
@@ -202,48 +209,153 @@ cargo run --bin cli -- auth revoke --name "production-api"
 
 ## Admin API
 
-Prism includes a built-in Admin API for monitoring and management, running on a separate HTTP server (default port: 3031).
+Prism includes an optional Admin API for monitoring and management. It runs on a **separate HTTP server** (default port: 3031) and is **disabled by default**.
 
-### Features
+### Enabling the Admin API
 
-- **System Status**: Health checks, version info, uptime
-- **Upstream Management**: CRUD operations, health checks, circuit breaker control
-- **Cache Management**: Statistics, memory allocation, cache clearing
-- **Metrics**: KPIs, latency percentiles, request volume, error distribution
-- **Alerts**: Alert management and rule configuration
-- **API Keys**: Key management (when authentication is enabled)
-- **Logs**: Log querying and export
+The Admin API is disabled by default. To enable it, set `enabled = true` in your configuration:
+
+```toml
+[admin]
+enabled = true
+bind_address = "127.0.0.1"  # Localhost only for security
+port = 3031
+```
+
+Or use the development config with admin enabled:
+
+```bash
+# Start with admin API enabled
+cargo make run-server-admin
+
+# Or use the devnet config (also has admin enabled)
+cargo make run-server-devnet
+```
+
+### Configuration Options
+
+```toml
+[admin]
+enabled = false                    # Enable/disable admin API (default: false)
+bind_address = "127.0.0.1"         # Bind address (default: localhost only)
+port = 3031                        # Admin API port (default: 3031)
+instance_name = "prism-node-1"     # Instance identifier for multi-node setups
+admin_token = "your-secure-token"  # Authentication token (required in production)
+prometheus_url = "http://localhost:9090"  # Prometheus server for historical metrics
+rate_limit_max_tokens = 100        # Rate limit bucket size
+rate_limit_refill_rate = 10        # Tokens per second refill rate
+```
+
+### API Endpoints
+
+The Admin API provides the following endpoint groups:
+
+| Group | Endpoints | Description |
+|-------|-----------|-------------|
+| **System** | `/admin/system/*` | Health checks, version info, uptime, settings |
+| **Upstreams** | `/admin/upstreams/*` | List, create, update, delete upstreams; health checks; circuit breaker control |
+| **Cache** | `/admin/cache/*` | Statistics, hit rates, memory usage, cache invalidation |
+| **Metrics** | `/admin/metrics/*` | KPIs, latency percentiles, request volume, error distribution |
+| **Alerts** | `/admin/alerts/*` | Alert management, rule configuration, acknowledgment |
+| **API Keys** | `/admin/apikeys/*` | Key management (when auth is enabled) |
+| **Logs** | `/admin/logs/*` | Log querying and export |
+| **Config** | `/admin/config/*` | Configuration export and persistence |
 
 ### Quick Start
 
 ```bash
-# Start Prism (Admin API runs on port 3031 by default)
-cargo run --release
+# Start server with admin API
+cargo make run-server-admin
 
-# Access Swagger UI
+# Open Swagger UI for interactive API docs
 open http://localhost:3031/admin/swagger-ui
 
-# Check system status
+# Check system health
+curl http://localhost:3031/admin/system/health
+
+# Get system status
 curl http://localhost:3031/admin/system/status
+
+# List all upstreams
+curl http://localhost:3031/admin/upstreams
+
+# Get cache statistics
+curl http://localhost:3031/admin/cache/stats
 ```
 
-### Authentication
+### Prometheus Integration
 
-For production, configure an admin token in your config file or environment:
+The Admin API can query a Prometheus server for historical metrics. Configure the Prometheus URL:
 
 ```toml
 [admin]
-admin_token = "your-secure-token-here"
+enabled = true
+prometheus_url = "http://localhost:9090"
 ```
 
-Then include the token in requests:
+This enables endpoints like:
+- `/admin/metrics/kpis` - Key performance indicators with historical data
+- `/admin/metrics/latency` - Latency percentiles over time
+- `/admin/metrics/request_volume` - Request volume trends
+
+Prism exposes Prometheus-compatible metrics at `GET /metrics` on the main server (same port as the RPC endpoint, default 3030):
+
+```bash
+# Scrape metrics from Prism
+curl http://localhost:3030/metrics
+```
+
+Configure Prometheus to scrape this endpoint, then point the Admin API to your Prometheus server to enable historical metric queries.
+
+### Authentication
+
+> **Security Warning**: Always set an `admin_token` in production environments.
+
+For production, configure an admin token:
+
+```toml
+[admin]
+enabled = true
+admin_token = "your-secure-token-here"  # Minimum 16 characters recommended
+```
+
+Or via environment variable:
+
+```bash
+export PRISM_ADMIN__ADMIN_TOKEN="your-secure-token-here"
+```
+
+Include the token in requests:
 
 ```bash
 curl -H "X-Admin-Token: your-secure-token-here" \
   http://localhost:3031/admin/system/status
 ```
 
-See the [Swagger UI](http://localhost:3031/admin/swagger-ui) for complete API documentation.
+### Makefile Tasks
+
+```bash
+# Start server with admin API (debug build)
+cargo make run-server-admin
+
+# Start server with admin API (release build)
+cargo make run-server-admin-release
+
+# Test admin API endpoints
+cargo make admin-health      # Check health
+cargo make admin-status      # Get system status
+cargo make admin-upstreams   # List upstreams
+cargo make admin-cache-stats # Get cache stats
+cargo make admin-test-all    # Test all major endpoints
+
+# Open Swagger UI
+cargo make admin-swagger
+
+# Run admin API unit tests
+cargo make test-admin
+```
+
+See the [Swagger UI](http://localhost:3031/admin/swagger-ui) for complete API documentation when the server is running.
 
 
 ## E2E Testing with Devnet
