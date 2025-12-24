@@ -13,7 +13,7 @@
 [**Homepage**](https://prismrpc.dev) · [**Docs**](https://docs.prismrpc.dev) · [**Architecture**](docs/architecture.md)
 </div>
 
-## 🔷 What is Prism
+## What is Prism
 
 **Prism** is an *Ethereum JSON RPC aggregator and proxy* written in *Rust*.
 
@@ -172,7 +172,7 @@ cargo make cli-test-upstreams
 
 When authentication is enabled you can manage API keys through the CLI.
 
-### 🔑 Create a new key
+### Create a new key
 
 ```bash
 cargo run --bin cli -- auth create \
