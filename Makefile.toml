@@ -13,9 +13,6 @@ CARGO_MAKE_EXTEND_WORKSPACE_MAKEFILE = true
 # Default log level for development
 RUST_LOG = "warn,prism_core=info,server=info,cli=info,tests=info"
 
-# =============================================================================
-# BASIC DEVELOPMENT TASKS
-# =============================================================================
 [tasks.format]
 description = "Format all code using rustfmt"
 command = "cargo"
@@ -30,10 +27,6 @@ args = ["fmt", "--all", "--", "--check"]
 description = "Clean all build artifacts"
 command = "cargo"
 args = ["clean"]
-
-# =============================================================================
-# LINTING TASKS
-# =============================================================================
 
 [tasks.clippy]
 description = "Run clippy on lib and bins"
@@ -55,10 +48,6 @@ description = "Run clippy on benchmarks only"
 command = "cargo"
 args = ["clippy", "--benches", "--all-features", "--", "-W", "clippy::pedantic", "-D", "warnings"]
 
-# =============================================================================
-# BUILD TASKS
-# =============================================================================
-
 [tasks.build]
 description = "Build the project in debug mode"
 command = "cargo"
@@ -73,10 +62,6 @@ args = ["build", "--release", "--all-targets", "--all-features"]
 description = "Fast check compilation without producing binaries"
 command = "cargo"
 args = ["check", "--all-targets", "--all-features"]
-
-# =============================================================================
-# TESTING TASKS (using cargo-nextest for better performance)
-# =============================================================================
 
 [tasks.test]
 description = "Run unit tests (excludes e2e tests which require devnet)"
@@ -113,10 +98,6 @@ description = "Run tests with cargo test (fallback if nextest unavailable)"
 command = "cargo"
 args = ["test", "--all-features"]
 
-# =============================================================================
-# BENCHMARK TASKS (Criterion)
-# =============================================================================
-
 [tasks.bench]
 description = "Run all Criterion benchmarks"
 clear = true
@@ -148,10 +129,6 @@ description = "Compare against saved baseline"
 command = "cargo"
 args = ["bench", "-p", "prism-core", "--bench", "cache_benchmarks", "--bench", "hex_benchmarks", "--", "--baseline", "main"]
 
-# =============================================================================
-# SERVER AND CLI TASKS
-# =============================================================================
-
 [tasks.run-server]
 description = "Run server with production config (JSON logs, admin disabled)"
 command = "cargo"
@@ -179,7 +156,6 @@ description = "Run the CLI tool (use -- to pass arguments)"
 command = "cargo"
 args = ["run", "--bin", "cli", "--"]
 
-# CLI subcommands for convenience
 [tasks.cli-config-validate]
 description = "Validate configuration using CLI"
 command = "cargo"
@@ -199,10 +175,6 @@ args = ["run", "--bin", "cli", "--", "config", "generate", "--force"]
 description = "Test configured upstream connections"
 command = "cargo"
 args = ["run", "--bin", "cli", "--", "config", "test-upstreams"]
-
-# =============================================================================
-# WORKFLOW TASKS
-# =============================================================================
 
 [tasks.quick-check]
 description = "Quick development check: format + clippy + test"
@@ -227,10 +199,6 @@ dependencies = ["format-check", "clippy", "test"]
 [tasks.ci]
 description = "Complete CI pipeline: clean + validate + build + performance"
 dependencies = ["clean", "format-check", "clippy-all", "test", "test-performance", "build-release"]
-
-# =============================================================================
-# UTILITY TASKS
-# =============================================================================
 
 [tasks.deps]
 description = "Show dependency tree"
@@ -261,10 +229,6 @@ command = "cargo"
 args = ["expand"]
 install_crate = "cargo-expand"
 
-# =============================================================================
-# DOCUMENTATION TASKS
-# =============================================================================
-
 [tasks.doc]
 description = "Generate documentation"
 command = "cargo"
@@ -289,10 +253,6 @@ fi
 lychee --verbose '**/*.md'
 '''
 
-# =============================================================================
-# COVERAGE TASKS
-# =============================================================================
-
 [tasks.coverage-llvm]
 description = "Generate code coverage report using llvm-cov"
 env = { "RUSTFLAGS" = "-C instrument-coverage", "LLVM_PROFILE_FILE" = "coverage/cargo-test-%p-%m.profraw" }
@@ -311,10 +271,6 @@ cargo llvm-cov --no-default-features --features verbose-logging,enable-stats --n
 cargo llvm-cov report --codecov --output-path coverage/codecov.json "$@"
 '''
 
-# =============================================================================
-# MAINTENANCE TASKS
-# =============================================================================
-
 [tasks.update]
 description = "Update all dependencies"
 command = "cargo"
@@ -325,21 +281,9 @@ description = "Apply cargo fix suggestions"
 command = "cargo"
 args = ["fix", "--all-targets", "--all-features", "--allow-dirty"]
 
-# =============================================================================
-# DEFAULT TASK
-# =============================================================================
-
 [tasks.default]
 description = "Default task: run quick development check"
 alias = "quick-check"
-
-# =============================================================================
-# HELP TASK
-# =============================================================================
-
-# =============================================================================
-# DEVNET TASKS - Local Ethereum Dev Network
-# =============================================================================
 
 [tasks.devnet-start]
 description = "Start local Ethereum devnet (Anvil nodes)"
@@ -407,10 +351,6 @@ command = "cargo"
 args = ["run", "--bin", "server"]
 env = { "PRISM_CONFIG" = "docker/devnet/config.test.toml", "RUST_LOG" = "debug" }
 
-# =============================================================================
-# ADMIN API TASKS - Admin interface testing and utilities
-# =============================================================================
-
 [tasks.admin-swagger]
 description = "Open admin Swagger UI in browser (requires running server with admin enabled)"
 script = '''
@@ -473,12 +413,6 @@ echo ""
 echo "Admin API test complete!"
 '''
 
-# =============================================================================
-# RUST E2E TESTS - Comprehensive Rust-based tests against devnet
-# =============================================================================
-
-# Main e2e-rust task runs non-failover tests first, then failover tests separately
-# This prevents Docker container manipulation from affecting other tests
 [tasks.e2e-rust]
 description = "Run all Rust E2E tests (requires devnet + server running)"
 dependencies = ["e2e-rust-no-failover", "e2e-rust-failover"]
@@ -530,11 +464,6 @@ env = { "VERBOSE" = "true" }
 script = '''
 ./docker/devnet/verify.sh
 '''
-
-# =============================================================================
-# K6 LOAD TESTING TASKS
-# Based on erpc patterns - see k6/README.md for details
-# =============================================================================
 
 [tasks.k6-check]
 description = "Check if k6 is installed"
@@ -668,10 +597,6 @@ cd k6 && k6 run scenarios/historical-load.js \
 echo "Results saved to k6/results/historical-${TIMESTAMP}.json"
 '''
 
-# =============================================================================
-# DOCKER TASKS
-# =============================================================================
-
 [tasks.docker-build]
 description = "Build Docker image for production"
 script = '''
@@ -731,10 +656,6 @@ echo "Cleanup complete!"
 description = "Open a shell in the running Prism container"
 command = "docker"
 args = ["exec", "-it", "prism-rpc", "/bin/bash"]
-
-# =============================================================================
-# HELP TASK
-# =============================================================================
 
 [tasks.help]
 description = "Show available tasks and their descriptions"
