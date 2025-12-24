@@ -102,7 +102,7 @@ PRISM_CONFIG=config/production.toml cargo run --bin server
 - **Notes**:
   - The Prism server must have network access to this Prometheus instance
   - If initialization fails, a warning is logged but the server continues without Prometheus integration
-  - See the [Prometheus Integration Guide](./prometheus-integration.md) for setup details
+  - See [Prometheus Integration](../../README.md#prometheus-integration) in the main README for setup details
 
 ### `rate_limit_max_tokens`
 
@@ -406,11 +406,8 @@ Both `rate_limit_max_tokens` and `rate_limit_refill_rate` must be set together:
 
 ## Related Documentation
 
-- [Admin API Overview](./README.md) - General introduction to the Admin API
-- [Admin API Endpoints](./endpoints.md) - Complete endpoint reference
-- [Prometheus Integration](./prometheus-integration.md) - Setting up Prometheus metrics
-- [Authentication Guide](./authentication.md) - Detailed authentication setup
-- [Deployment Guide](../deployment.md) - Production deployment best practices
+- [Admin API in README](../../README.md#admin-api) - Overview and quick start guide
+- [Swagger UI](http://localhost:3031/admin/swagger-ui) - Interactive API documentation (when server is running)
 
 ## Troubleshooting
 
