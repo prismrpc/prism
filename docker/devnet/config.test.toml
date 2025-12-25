@@ -12,6 +12,12 @@ bind_port = 3030
 max_concurrent_requests = 500
 request_timeout_seconds = 10
 
+[admin]
+enabled = true
+bind_address = "127.0.0.1"  # Default: localhost only (for security)
+port = 3031                 # Default: 3031
+prometheus_url = "http://localhost:9090"
+
 # =============================================================================
 # UPSTREAM PROVIDERS - Local Geth PoA Devnet Nodes
 # All nodes sync from the same chain, ensuring consistent data.

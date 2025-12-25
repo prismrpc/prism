@@ -2,6 +2,7 @@
 
 use super::{
     consensus::{ConsensusConfig, ConsensusEngine},
+    dynamic_registry::DynamicUpstreamRegistry,
     hedging::{HedgeConfig, HedgeExecutor},
     http_client::HttpClient,
     load_balancer::LoadBalancer,
@@ -10,7 +11,7 @@ use super::{
     scoring::{ScoringConfig, ScoringEngine},
 };
 use crate::chain::ChainState;
-use std::sync::Arc;
+use std::{path::PathBuf, sync::Arc};
 use thiserror::Error;
 use tokio::sync::RwLock;
 
@@ -56,6 +57,7 @@ pub struct UpstreamManagerBuilder {
     hedge_config: HedgeConfig,
     consensus_config: ConsensusConfig,
     router: Option<Arc<SmartRouter>>,
+    dynamic_storage_path: Option<PathBuf>,
 }
 
 impl UpstreamManagerBuilder {
@@ -70,6 +72,7 @@ impl UpstreamManagerBuilder {
             hedge_config: HedgeConfig::default(),
             consensus_config: ConsensusConfig::default(),
             router: None,
+            dynamic_storage_path: None,
         }
     }
 
@@ -135,6 +138,15 @@ impl UpstreamManagerBuilder {
         self
     }
 
+    /// Sets the storage path for dynamic upstreams persistence.
+    ///
+    /// If set, dynamic upstreams will be persisted to this file and loaded on restart.
+    #[must_use]
+    pub fn dynamic_storage_path(mut self, path: PathBuf) -> Self {
+        self.dynamic_storage_path = Some(path);
+        self
+    }
+
     /// Builds the `UpstreamManager`.
     ///
     /// # Errors
@@ -154,6 +166,9 @@ impl UpstreamManagerBuilder {
         let hedge_executor = Arc::new(HedgeExecutor::new(self.hedge_config));
         let scoring_engine = Arc::new(ScoringEngine::new(self.scoring_config, chain_state.clone()));
         let consensus_engine = Arc::new(ConsensusEngine::new(self.consensus_config));
+
+        // Create dynamic upstream registry
+        let dynamic_registry = Arc::new(DynamicUpstreamRegistry::new(self.dynamic_storage_path));
 
         // Create routing context
         let routing_context = Arc::new(RoutingContext::new(
@@ -176,6 +191,7 @@ impl UpstreamManagerBuilder {
             consensus_engine,
             routing_context,
             router,
+            dynamic_registry,
         ))
     }
 }

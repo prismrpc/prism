@@ -55,6 +55,15 @@ pub struct TransactionCache {
     block_transactions: DashMap<u64, Vec<[u8; 32]>, RandomState>,
 
     stats: Arc<RwLock<CacheStats>>,
+
+    /// Atomic hit counter for transactions
+    tx_hits: std::sync::atomic::AtomicU64,
+    /// Atomic miss counter for transactions
+    tx_misses: std::sync::atomic::AtomicU64,
+    /// Atomic hit counter for receipts
+    receipt_hits: std::sync::atomic::AtomicU64,
+    /// Atomic miss counter for receipts
+    receipt_misses: std::sync::atomic::AtomicU64,
 }
 
 impl TransactionCache {
@@ -84,6 +93,10 @@ impl TransactionCache {
             max_receipts: config.max_receipts,
             block_transactions: DashMap::with_hasher(RandomState::new()),
             stats: Arc::new(RwLock::new(CacheStats::default())),
+            tx_hits: std::sync::atomic::AtomicU64::new(0),
+            tx_misses: std::sync::atomic::AtomicU64::new(0),
+            receipt_hits: std::sync::atomic::AtomicU64::new(0),
+            receipt_misses: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -150,12 +163,24 @@ impl TransactionCache {
 
     #[must_use]
     pub fn get_transaction(&self, tx_hash: &[u8; 32]) -> Option<Arc<TransactionRecord>> {
-        self.transactions_by_hash.get(tx_hash).map(|tx| Arc::clone(&tx))
+        if let Some(tx) = self.transactions_by_hash.get(tx_hash) {
+            self.tx_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(Arc::clone(&tx))
+        } else {
+            self.tx_misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
     }
 
     #[must_use]
     pub fn get_receipt(&self, tx_hash: &[u8; 32]) -> Option<Arc<ReceiptRecord>> {
-        self.receipts_by_hash.get(tx_hash).map(|rcpt| Arc::clone(&rcpt))
+        if let Some(rcpt) = self.receipts_by_hash.get(tx_hash) {
+            self.receipt_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(Arc::clone(&rcpt))
+        } else {
+            self.receipt_misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
     }
 
     /// Returns a receipt with all log references resolved to actual log records.
@@ -290,6 +315,8 @@ impl TransactionCache {
     }
 
     pub async fn get_stats(&self) -> CacheStats {
+        // Update stats including hit/miss counters
+        self.update_stats().await;
         self.stats.read().await.clone()
     }
 
@@ -297,6 +324,34 @@ impl TransactionCache {
         let mut stats = self.stats.write().await;
         stats.transaction_cache_size = self.transactions_by_hash.len();
         stats.receipt_cache_size = self.receipts_by_hash.len();
+        stats.transaction_cache_hits = self.tx_hits.load(std::sync::atomic::Ordering::Relaxed);
+        stats.transaction_cache_misses = self.tx_misses.load(std::sync::atomic::Ordering::Relaxed);
+        stats.receipt_cache_hits = self.receipt_hits.load(std::sync::atomic::Ordering::Relaxed);
+        stats.receipt_cache_misses = self.receipt_misses.load(std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the current transaction hit count.
+    #[must_use]
+    pub fn transaction_hit_count(&self) -> u64 {
+        self.tx_hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Returns the current transaction miss count.
+    #[must_use]
+    pub fn transaction_miss_count(&self) -> u64 {
+        self.tx_misses.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Returns the current receipt hit count.
+    #[must_use]
+    pub fn receipt_hit_count(&self) -> u64 {
+        self.receipt_hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Returns the current receipt miss count.
+    #[must_use]
+    pub fn receipt_miss_count(&self) -> u64 {
+        self.receipt_misses.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Prunes transactions to stay within capacity by evicting from oldest blocks first.
@@ -309,9 +364,27 @@ impl TransactionCache {
             return;
         }
 
-        // Collect and sort block numbers (oldest first)
+        // Collect block numbers - use partial sorting for efficiency
+        // Estimate: we need approximately to_evict / avg_txs_per_block blocks
+        // Use a minimum of 10 blocks as a starting estimate
         let mut blocks: Vec<u64> = self.block_transactions.iter().map(|e| *e.key()).collect();
-        blocks.sort_unstable();
+
+        if blocks.is_empty() {
+            return;
+        }
+
+        // Optimization: use select_nth_unstable for O(n) partial sorting
+        // instead of full O(n log n) sort when we only need oldest blocks
+        let estimated_blocks_needed = (to_evict / 10).max(10).min(blocks.len());
+        if estimated_blocks_needed < blocks.len() {
+            // Partition so that blocks[0..k] contains the k smallest block numbers
+            blocks.select_nth_unstable(estimated_blocks_needed.saturating_sub(1));
+            // Only sort the subset we'll actually use
+            blocks[..estimated_blocks_needed].sort_unstable();
+        } else {
+            // If we might need all blocks, just do a full sort
+            blocks.sort_unstable();
+        }
 
         let mut evicted = 0;
         for block in blocks {
@@ -387,7 +460,11 @@ mod tests {
             from: [3u8; 20],
             to: Some([4u8; 20]),
             value: [5u8; 32],
-            gas_price: [6u8; 32],
+            tx_type: Some(0), // Legacy transaction
+            gas_price: Some([6u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![1, 2, 3],
@@ -449,7 +526,11 @@ mod tests {
             from: [3u8; 20],
             to: Some([4u8; 20]),
             value: [5u8; 32],
-            gas_price: [6u8; 32],
+            tx_type: Some(0), // Legacy transaction
+            gas_price: Some([6u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],
@@ -501,7 +582,11 @@ mod tests {
             from: [3u8; 20],
             to: Some([4u8; 20]),
             value: [5u8; 32],
-            gas_price: [6u8; 32],
+            tx_type: Some(0), // Legacy transaction
+            gas_price: Some([6u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],
@@ -532,7 +617,11 @@ mod tests {
             from: [1u8; 20],
             to: Some([2u8; 20]),
             value: [0u8; 32],
-            gas_price: [1u8; 32],
+            tx_type: Some(0), // Legacy transaction
+            gas_price: Some([1u8; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],
@@ -1211,5 +1300,91 @@ mod tests {
         assert_eq!(cached.logs.len(), 3);
         assert_eq!(cached.logs[0].block_number, 1000);
         assert_eq!(cached.logs[0].log_index, 0);
+    }
+
+    #[tokio::test]
+    async fn test_transaction_hit_miss_tracking_accuracy() {
+        let config = TransactionCacheConfig::default();
+        let cache = TransactionCache::new(&config).expect("valid config");
+
+        // Initial state
+        assert_eq!(cache.transaction_hit_count(), 0);
+        assert_eq!(cache.transaction_miss_count(), 0);
+
+        // Insert transaction
+        let tx = create_test_transaction([1u8; 32], Some(1000));
+        cache.insert_transaction(tx).await;
+
+        // Hit: transaction exists
+        let result = cache.get_transaction(&[1u8; 32]);
+        assert!(result.is_some());
+        assert_eq!(cache.transaction_hit_count(), 1);
+        assert_eq!(cache.transaction_miss_count(), 0);
+
+        // Miss: transaction doesn't exist
+        let result = cache.get_transaction(&[99u8; 32]);
+        assert!(result.is_none());
+        assert_eq!(cache.transaction_hit_count(), 1);
+        assert_eq!(cache.transaction_miss_count(), 1);
+
+        // Multiple hits
+        let _ = cache.get_transaction(&[1u8; 32]);
+        let _ = cache.get_transaction(&[1u8; 32]);
+        assert_eq!(cache.transaction_hit_count(), 3);
+        assert_eq!(cache.transaction_miss_count(), 1);
+
+        // Multiple misses
+        let _ = cache.get_transaction(&[2u8; 32]);
+        let _ = cache.get_transaction(&[3u8; 32]);
+        assert_eq!(cache.transaction_hit_count(), 3);
+        assert_eq!(cache.transaction_miss_count(), 3);
+
+        // Verify stats are updated correctly
+        let stats = cache.get_stats().await;
+        assert_eq!(stats.transaction_cache_hits, 3);
+        assert_eq!(stats.transaction_cache_misses, 3);
+    }
+
+    #[tokio::test]
+    async fn test_receipt_hit_miss_tracking_accuracy() {
+        let config = TransactionCacheConfig::default();
+        let cache = TransactionCache::new(&config).expect("valid config");
+
+        // Initial state
+        assert_eq!(cache.receipt_hit_count(), 0);
+        assert_eq!(cache.receipt_miss_count(), 0);
+
+        // Insert receipt
+        let receipt = create_test_receipt([1u8; 32], 1000);
+        cache.insert_receipt(receipt).await;
+
+        // Hit: receipt exists
+        let result = cache.get_receipt(&[1u8; 32]);
+        assert!(result.is_some());
+        assert_eq!(cache.receipt_hit_count(), 1);
+        assert_eq!(cache.receipt_miss_count(), 0);
+
+        // Miss: receipt doesn't exist
+        let result = cache.get_receipt(&[99u8; 32]);
+        assert!(result.is_none());
+        assert_eq!(cache.receipt_hit_count(), 1);
+        assert_eq!(cache.receipt_miss_count(), 1);
+
+        // Multiple hits
+        let _ = cache.get_receipt(&[1u8; 32]);
+        let _ = cache.get_receipt(&[1u8; 32]);
+        assert_eq!(cache.receipt_hit_count(), 3);
+        assert_eq!(cache.receipt_miss_count(), 1);
+
+        // Multiple misses
+        let _ = cache.get_receipt(&[2u8; 32]);
+        let _ = cache.get_receipt(&[3u8; 32]);
+        assert_eq!(cache.receipt_hit_count(), 3);
+        assert_eq!(cache.receipt_miss_count(), 3);
+
+        // Verify stats are updated correctly
+        let stats = cache.get_stats().await;
+        assert_eq!(stats.receipt_cache_hits, 3);
+        assert_eq!(stats.receipt_cache_misses, 3);
     }
 }

@@ -6,9 +6,12 @@
 //! tracking.
 
 use arc_swap::ArcSwap;
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
+use std::{
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    time::{SystemTime, UNIX_EPOCH},
 };
 use tokio::sync::RwLock;
 use tracing::trace;
@@ -74,6 +77,14 @@ pub struct ChainState {
 
     /// Finalized block number (beyond which reorgs are impossible).
     finalized_block: Arc<AtomicU64>,
+
+    /// Unix timestamp (seconds) of the last tip update.
+    last_tip_update: Arc<AtomicU64>,
+}
+
+/// Returns the current unix timestamp in seconds.
+fn current_unix_timestamp() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 impl ChainState {
@@ -84,6 +95,7 @@ impl ChainState {
             tip: Arc::new(ArcSwap::from_pointee(ChainTip::default())),
             tip_write_lock: Arc::new(RwLock::new(())),
             finalized_block: Arc::new(AtomicU64::new(0)),
+            last_tip_update: Arc::new(AtomicU64::new(current_unix_timestamp())),
         }
     }
 
@@ -101,6 +113,16 @@ impl ChainState {
     #[must_use]
     pub fn finalized_block(&self) -> u64 {
         self.finalized_block.load(Ordering::Acquire)
+    }
+
+    /// Returns the number of seconds since the last tip update.
+    ///
+    /// Used by the admin API to show how fresh the chain state is.
+    #[inline]
+    #[must_use]
+    pub fn tip_age_seconds(&self) -> u64 {
+        let last_update = self.last_tip_update.load(Ordering::Acquire);
+        current_unix_timestamp().saturating_sub(last_update)
     }
 
     /// Returns the current head block hash.
@@ -151,6 +173,7 @@ impl ChainState {
         }
 
         self.tip.store(Arc::new(ChainTip { block_number, block_hash }));
+        self.last_tip_update.store(current_unix_timestamp(), Ordering::Release);
         trace!(block = block_number, "chain tip updated");
         true
     }
@@ -168,6 +191,7 @@ impl ChainState {
     pub async fn force_update_tip(&self, block_number: u64, block_hash: [u8; 32]) {
         let _guard = self.tip_write_lock.write().await;
         self.tip.store(Arc::new(ChainTip { block_number, block_hash }));
+        self.last_tip_update.store(current_unix_timestamp(), Ordering::Release);
         trace!(block = block_number, "chain tip force updated (rollback)");
     }
 
@@ -180,6 +204,7 @@ impl ChainState {
         let current = **self.tip.load();
         self.tip
             .store(Arc::new(ChainTip { block_number, block_hash: current.block_hash }));
+        self.last_tip_update.store(current_unix_timestamp(), Ordering::Release);
         trace!(block = block_number, "chain tip force updated (simple, no hash)");
     }
 
@@ -212,6 +237,7 @@ impl ChainState {
         }
         self.tip
             .store(Arc::new(ChainTip { block_number, block_hash: current.block_hash }));
+        self.last_tip_update.store(current_unix_timestamp(), Ordering::Release);
         trace!(block = block_number, "chain tip updated (simple)");
         true
     }

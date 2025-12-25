@@ -104,6 +104,7 @@
 
 #![feature(stmt_expr_attributes)]
 
+pub mod alerts;
 pub mod auth;
 pub mod cache;
 pub mod chain;

@@ -4,6 +4,7 @@ use prettytable::{row, Table};
 use prism_core::auth::{
     api_key::ApiKey,
     repository::{ApiKeyRepository, SqliteRepository},
+    ApiKeyScope,
 };
 
 #[derive(Subcommand)]
@@ -162,6 +163,7 @@ async fn handle_create_key(
         last_used_at: None,
         is_active: true,
         expires_at,
+        scope: ApiKeyScope::default(),
     };
 
     let allowed_methods = params.methods.map_or_else(

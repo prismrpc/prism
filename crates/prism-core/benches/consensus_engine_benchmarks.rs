@@ -85,6 +85,7 @@ fn generate_response(block_number: u64, tx_count: usize, include_result: bool) -
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     }
 }
 
@@ -100,6 +101,7 @@ fn generate_error_response(code: i32, message: &str) -> JsonRpcResponse {
         }),
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     }
 }
 
@@ -111,6 +113,7 @@ fn generate_empty_response() -> JsonRpcResponse {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     }
 }
 
@@ -196,6 +199,7 @@ fn bench_response_type_classification(c: &mut Criterion) {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
     group.bench_function("large_response", |b| {
         b.iter(|| ResponseType::from_response(black_box(&large)));
@@ -230,6 +234,7 @@ fn bench_response_hashing(c: &mut Criterion) {
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
     group.bench_function("very_large_nested", |b| {
         b.iter(|| hash_json_response(black_box(&very_large)));

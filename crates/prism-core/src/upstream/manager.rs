@@ -1,6 +1,7 @@
 use super::{
     circuit_breaker::CircuitBreakerState,
     consensus::{ConsensusConfig, ConsensusEngine},
+    dynamic_registry::{DynamicUpstreamConfig, DynamicUpstreamRegistry, DynamicUpstreamUpdate},
     router::{RoutingContext, SmartRouter},
     scoring::{ScoringConfig, ScoringEngine, UpstreamScore},
     HedgeConfig, HedgeExecutor, LoadBalancer, UpstreamEndpoint, UpstreamError,
@@ -50,6 +51,7 @@ pub struct UpstreamManager {
     consensus_engine: Arc<ConsensusEngine>,
     routing_context: Arc<RoutingContext>,
     router: Arc<SmartRouter>,
+    dynamic_registry: Arc<DynamicUpstreamRegistry>,
 }
 
 /// Configuration for the `UpstreamManager`.
@@ -122,6 +124,7 @@ impl UpstreamManager {
         consensus_engine: Arc<ConsensusEngine>,
         routing_context: Arc<RoutingContext>,
         router: Arc<SmartRouter>,
+        dynamic_registry: Arc<DynamicUpstreamRegistry>,
     ) -> Self {
         Self {
             load_balancer,
@@ -132,6 +135,7 @@ impl UpstreamManager {
             consensus_engine,
             routing_context,
             router,
+            dynamic_registry,
         }
     }
 
@@ -142,9 +146,24 @@ impl UpstreamManager {
     }
 
     /// Removes an upstream endpoint by name.
+    ///
+    /// This also cleans up metrics and latency tracking data.
     pub fn remove_upstream(&self, name: &str) {
         info!(name = %name, "removing upstream endpoint");
         self.load_balancer.remove_upstream(name);
+
+        // Clean up tracking data
+        self.scoring_engine.remove_metrics(name);
+        self.hedge_executor.remove_latency_tracker(name);
+    }
+
+    /// Updates an upstream endpoint's configuration atomically.
+    ///
+    /// This preserves the upstream's position in the list and performs an atomic swap.
+    /// Returns true if the upstream was found and updated, false otherwise.
+    pub fn update_upstream(&self, name: &str, config: UpstreamConfig) -> bool {
+        info!(name = %name, url = %config.url, weight = config.weight, "updating upstream endpoint");
+        self.load_balancer.update_upstream(name, config, self.http_client.clone())
     }
 
     /// Returns all upstream endpoints, both healthy and unhealthy.
@@ -455,6 +474,276 @@ impl UpstreamManager {
     pub async fn is_consensus_enabled(&self) -> bool {
         self.consensus_engine.is_enabled().await
     }
+
+    /// Returns a reference to the dynamic upstream registry.
+    #[must_use]
+    pub fn get_dynamic_registry(&self) -> Arc<DynamicUpstreamRegistry> {
+        self.dynamic_registry.clone()
+    }
+
+    /// Adds a dynamic upstream and registers it in the dynamic registry.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The upstream name conflicts with an existing upstream
+    /// - Validation fails (invalid URL, weight out of range, etc.)
+    /// - Registration in the dynamic registry fails
+    pub fn add_dynamic_upstream(
+        &self,
+        request: CreateUpstreamRequest,
+    ) -> Result<DynamicUpstreamConfig, UpstreamError> {
+        // Validate request
+        validate_upstream_request(&request)?;
+
+        // Generate ID
+        let id = uuid::Uuid::new_v4().to_string();
+
+        // Create dynamic upstream config
+        let now = chrono::Utc::now().to_rfc3339();
+        let dynamic_config = DynamicUpstreamConfig {
+            id: id.clone(),
+            name: request.name.clone(),
+            url: request.url.clone(),
+            ws_url: request.ws_url.clone(),
+            weight: request.weight,
+            chain_id: request.chain_id,
+            timeout_seconds: request.timeout_seconds,
+            enabled: true,
+            created_at: now.clone(),
+            updated_at: now,
+        };
+
+        // Register in dynamic registry
+        self.dynamic_registry
+            .add(&dynamic_config)
+            .map_err(UpstreamError::InvalidRequest)?;
+
+        // Create UpstreamConfig for load balancer
+        let upstream_config = UpstreamConfig {
+            name: Arc::from(request.name.as_str()),
+            url: request.url,
+            ws_url: request.ws_url,
+            weight: request.weight,
+            chain_id: request.chain_id,
+            timeout_seconds: request.timeout_seconds,
+            supports_websocket: false,           // TODO: detect from ws_url
+            circuit_breaker_threshold: 5,        // Default
+            circuit_breaker_timeout_seconds: 60, // Default
+        };
+
+        // Add to load balancer
+        self.add_upstream(upstream_config);
+
+        info!(id = %id, name = %dynamic_config.name, "added dynamic upstream");
+        Ok(dynamic_config)
+    }
+
+    /// Updates a dynamic upstream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The upstream is a config-based upstream (cannot modify)
+    /// - The upstream ID doesn't exist
+    /// - Validation fails
+    /// - Update fails
+    pub fn update_dynamic_upstream(
+        &self,
+        id: &str,
+        updates: &UpdateUpstreamRequest,
+    ) -> Result<DynamicUpstreamConfig, UpstreamError> {
+        // Get current config
+        let current = self.dynamic_registry.get(id).ok_or_else(|| {
+            UpstreamError::InvalidRequest(format!("Dynamic upstream '{id}' not found"))
+        })?;
+
+        // Validate updates
+        validate_upstream_updates(updates)?;
+
+        // Build update struct for registry
+        let mut registry_update = DynamicUpstreamUpdate::default();
+
+        if let Some(ref name) = updates.name {
+            registry_update.name = Some(name.clone());
+        }
+        if let Some(ref url) = updates.url {
+            registry_update.url = Some(url.clone());
+        }
+        if let Some(weight) = updates.weight {
+            registry_update.weight = Some(weight);
+        }
+        if let Some(enabled) = updates.enabled {
+            registry_update.enabled = Some(enabled);
+        }
+
+        // Update in registry
+        self.dynamic_registry
+            .update(id, registry_update)
+            .map_err(UpstreamError::InvalidRequest)?;
+
+        // Get updated config
+        let updated_config = self.dynamic_registry.get(id).ok_or_else(|| {
+            UpstreamError::InvalidRequest("Failed to retrieve updated config".to_string())
+        })?;
+
+        // If name changed, we need to remove old and add new
+        if updates.name.is_some() && updates.name.as_ref() != Some(&current.name) {
+            self.remove_upstream(&current.name);
+
+            let upstream_config = UpstreamConfig {
+                name: Arc::from(updated_config.name.as_str()),
+                url: updated_config.url.clone(),
+                ws_url: updated_config.ws_url.clone(),
+                weight: updated_config.weight,
+                chain_id: updated_config.chain_id,
+                timeout_seconds: updated_config.timeout_seconds,
+                supports_websocket: updated_config.ws_url.is_some(),
+                circuit_breaker_threshold: 5,
+                circuit_breaker_timeout_seconds: 60,
+            };
+
+            self.add_upstream(upstream_config);
+        } else {
+            // Update existing upstream
+            // For now, we recreate it
+            self.remove_upstream(&updated_config.name);
+
+            let upstream_config = UpstreamConfig {
+                name: Arc::from(updated_config.name.as_str()),
+                url: updated_config.url.clone(),
+                ws_url: updated_config.ws_url.clone(),
+                weight: updated_config.weight,
+                chain_id: updated_config.chain_id,
+                timeout_seconds: updated_config.timeout_seconds,
+                supports_websocket: updated_config.ws_url.is_some(),
+                circuit_breaker_threshold: 5,
+                circuit_breaker_timeout_seconds: 60,
+            };
+
+            self.add_upstream(upstream_config);
+        }
+
+        info!(id = %id, name = %updated_config.name, "updated dynamic upstream");
+        Ok(updated_config)
+    }
+
+    /// Removes a dynamic upstream.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The upstream is a config-based upstream (cannot remove)
+    /// - The upstream ID doesn't exist
+    pub fn remove_dynamic_upstream(&self, id: &str) -> Result<(), UpstreamError> {
+        // Get the config to check it exists and get the name
+        let config = self.dynamic_registry.get(id).ok_or_else(|| {
+            UpstreamError::InvalidRequest(format!("Dynamic upstream '{id}' not found"))
+        })?;
+
+        // Remove from registry
+        self.dynamic_registry.remove(id).map_err(UpstreamError::InvalidRequest)?;
+
+        // Remove from load balancer
+        self.remove_upstream(&config.name);
+
+        info!(id = %id, name = %config.name, "removed dynamic upstream");
+        Ok(())
+    }
+
+    /// Gets a dynamic upstream by ID.
+    #[must_use]
+    pub fn get_dynamic_upstream(&self, id: &str) -> Option<DynamicUpstreamConfig> {
+        self.dynamic_registry.get(id)
+    }
+
+    /// Lists all dynamic upstreams.
+    #[must_use]
+    pub fn list_dynamic_upstreams(&self) -> Vec<DynamicUpstreamConfig> {
+        self.dynamic_registry.list_all()
+    }
+}
+
+/// Request to create a new dynamic upstream.
+#[derive(Debug, Clone)]
+pub struct CreateUpstreamRequest {
+    pub name: String,
+    pub url: String,
+    pub ws_url: Option<String>,
+    pub weight: u32,
+    pub chain_id: u64,
+    pub timeout_seconds: u64,
+}
+
+/// Request to update a dynamic upstream.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateUpstreamRequest {
+    pub name: Option<String>,
+    pub url: Option<String>,
+    pub weight: Option<u32>,
+    pub enabled: Option<bool>,
+}
+
+/// Validates a create upstream request.
+fn validate_upstream_request(request: &CreateUpstreamRequest) -> Result<(), UpstreamError> {
+    // Validate name
+    if request.name.is_empty() || request.name.len() > 100 {
+        return Err(UpstreamError::InvalidRequest("Name must be 1-100 characters".to_string()));
+    }
+
+    // Check name format (alphanumeric, dash, underscore)
+    if !request.name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+        return Err(UpstreamError::InvalidRequest(
+            "Name must contain only alphanumeric characters, hyphens, and underscores".to_string(),
+        ));
+    }
+
+    // Validate URL
+    if url::Url::parse(&request.url).is_err() {
+        return Err(UpstreamError::InvalidRequest("Invalid URL".to_string()));
+    }
+
+    // Validate weight
+    if request.weight == 0 || request.weight > 1000 {
+        return Err(UpstreamError::InvalidRequest("Weight must be between 1 and 1000".to_string()));
+    }
+
+    Ok(())
+}
+
+/// Validates an update upstream request.
+fn validate_upstream_updates(updates: &UpdateUpstreamRequest) -> Result<(), UpstreamError> {
+    // Validate name if present
+    if let Some(ref name) = updates.name {
+        if name.is_empty() || name.len() > 100 {
+            return Err(UpstreamError::InvalidRequest("Name must be 1-100 characters".to_string()));
+        }
+
+        if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_') {
+            return Err(UpstreamError::InvalidRequest(
+                "Name must contain only alphanumeric characters, hyphens, and underscores"
+                    .to_string(),
+            ));
+        }
+    }
+
+    // Validate URL if present
+    if let Some(ref url) = updates.url {
+        if url::Url::parse(url).is_err() {
+            return Err(UpstreamError::InvalidRequest("Invalid URL".to_string()));
+        }
+    }
+
+    // Validate weight if present
+    if let Some(weight) = updates.weight {
+        if weight == 0 || weight > 1000 {
+            return Err(UpstreamError::InvalidRequest(
+                "Weight must be between 1 and 1000".to_string(),
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]

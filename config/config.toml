@@ -13,8 +13,6 @@ bind_port = 3030
 max_concurrent_requests = 500
 request_timeout_seconds = 30
 
-# Configure your RPC providers here
-# These are example public endpoints - replace with your own for production
 [upstreams]
 [[upstreams.providers]]
 name = "mevblocker"
@@ -63,8 +61,8 @@ cache_ttl_seconds = 300
 [cache.manager_config]
 retain_blocks = 1000
 enable_auto_cleanup = true
-cleanup_interval_seconds = 300  # 5 minutes
-cleanup_every_n_blocks = 100    # Trigger cleanup every 100 blocks
+cleanup_interval_seconds = 300
+cleanup_every_n_blocks = 100
 
 [cache.manager_config.log_cache]
 chunk_size = 1000

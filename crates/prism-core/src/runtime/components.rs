@@ -117,7 +117,13 @@ mod tests {
                 .build()
                 .unwrap(),
         );
-        let proxy = Arc::new(ProxyEngine::new(cache.clone(), upstream.clone(), metrics.clone()));
+        let alert_manager = Arc::new(crate::alerts::AlertManager::new());
+        let proxy = Arc::new(ProxyEngine::new(
+            cache.clone(),
+            upstream.clone(),
+            metrics.clone(),
+            alert_manager,
+        ));
 
         let components = PrismComponents::new(metrics, cache, reorg, upstream, None, proxy);
 
@@ -150,7 +156,13 @@ mod tests {
             metrics.clone(),
             config.health_check_interval(),
         ));
-        let proxy = Arc::new(ProxyEngine::new(cache.clone(), upstream.clone(), metrics.clone()));
+        let alert_manager = Arc::new(crate::alerts::AlertManager::new());
+        let proxy = Arc::new(ProxyEngine::new(
+            cache.clone(),
+            upstream.clone(),
+            metrics.clone(),
+            alert_manager,
+        ));
 
         let components = PrismComponents::new(metrics, cache, reorg, upstream, Some(health), proxy);
 

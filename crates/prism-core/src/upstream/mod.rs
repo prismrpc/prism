@@ -54,6 +54,7 @@
 pub mod builder;
 pub mod circuit_breaker;
 pub mod consensus;
+pub mod dynamic_registry;
 pub mod endpoint;
 pub mod errors;
 pub mod health;
@@ -73,13 +74,19 @@ pub use consensus::{
     ConsensusConfig, ConsensusEngine, ConsensusMetadata, ConsensusResult, DisputeBehavior,
     FailureBehavior, LowParticipantsBehavior, ResponseGroup, SelectionMethod,
 };
+pub use dynamic_registry::{
+    DynamicUpstreamConfig, DynamicUpstreamRegistry, DynamicUpstreamUpdate, UpstreamSource,
+};
 pub use endpoint::UpstreamEndpoint;
 pub use errors::{RpcErrorCategory, UpstreamError};
 pub use hedging::{HedgeConfig, HedgeExecutor};
 pub use http_client::{HttpClient, HttpClientConfig};
 pub use latency_tracker::LatencyTracker;
 pub use load_balancer::{LoadBalancer, LoadBalancerConfig, LoadBalancerStats};
-pub use manager::{UnhealthyBehaviorConfig, UpstreamManager, UpstreamManagerConfig};
+pub use manager::{
+    CreateUpstreamRequest, UnhealthyBehaviorConfig, UpdateUpstreamRequest, UpstreamManager,
+    UpstreamManagerConfig,
+};
 pub use misbehavior::{MisbehaviorConfig, MisbehaviorStats, MisbehaviorTracker};
 pub use router::{RoutingContext, SmartRouter};
 pub use scoring::{ScoringConfig, ScoringEngine, ScoringWeights, UpstreamMetrics, UpstreamScore};
