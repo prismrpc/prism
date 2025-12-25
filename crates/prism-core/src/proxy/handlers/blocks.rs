@@ -69,6 +69,7 @@ impl BlocksHandler {
                 error: None,
                 id: request.id,
                 cache_status: Some(CacheStatus::Full),
+                serving_upstream: None,
             });
         }
 
@@ -127,6 +128,7 @@ impl BlocksHandler {
                 error: None,
                 id: request.id,
                 cache_status: Some(CacheStatus::Full),
+                serving_upstream: None,
             });
         }
 
@@ -147,9 +149,15 @@ impl BlocksHandler {
     /// Validates block data integrity before caching to prevent cache poisoning.
     /// Converts JSON block data to header and body records, validates integrity,
     /// then stores them in cache only if validation passes.
+    ///
+    /// If the block contains full transaction objects (fullTransactions=true),
+    /// also extracts and caches individual transactions.
     async fn cache_block_from_response(&self, block_json: &serde_json::Value) {
         use crate::cache::{
-            converter::{json_block_to_block_body, json_block_to_block_header},
+            converter::{
+                json_block_to_block_body, json_block_to_block_header,
+                json_transaction_to_transaction_record,
+            },
             validation::validate_block_response,
         };
 
@@ -159,9 +167,41 @@ impl BlocksHandler {
         }
 
         if let Some(header) = json_block_to_block_header(block_json) {
+            let block_number = header.number;
+
             if let Some(body) = json_block_to_block_body(block_json) {
                 self.ctx.cache_manager.insert_header(header).await;
                 self.ctx.cache_manager.insert_body(body).await;
+
+                // Extract and cache individual transactions if present as objects
+                if let Some(transactions) =
+                    block_json.get("transactions").and_then(|v| v.as_array())
+                {
+                    // Check if transactions are full objects (not just hashes)
+                    if let Some(first_tx) = transactions.first() {
+                        if first_tx.is_object() {
+                            // Full transaction objects - cache them individually
+                            let mut cached_count = 0;
+                            for tx_json in transactions {
+                                if let Some(tx) = json_transaction_to_transaction_record(tx_json) {
+                                    self.ctx
+                                        .cache_manager
+                                        .transaction_cache
+                                        .insert_transaction(tx)
+                                        .await;
+                                    cached_count += 1;
+                                }
+                            }
+                            if cached_count > 0 {
+                                tracing::debug!(
+                                    block_number = block_number,
+                                    transaction_count = cached_count,
+                                    "cached transactions from block"
+                                );
+                            }
+                        }
+                    }
+                }
             } else {
                 tracing::warn!("failed to convert json block to block body, skipping body cache");
             }

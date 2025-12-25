@@ -1,0 +1,110 @@
+# Prism RPC Aggregator Configuration - Development with Admin API
+# This configuration enables the Admin API for development and testing.
+#
+# Usage:
+#   PRISM_CONFIG=config/development.admin.toml cargo run --bin server
+#   or: cargo make run-server-admin
+
+environment = "development"
+
+[server]
+bind_address = "127.0.0.1"
+bind_port = 3030
+max_concurrent_requests = 100
+request_timeout_seconds = 30
+
+[admin]
+enabled = true
+bind_address = "127.0.0.1"
+port = 3031
+prometheus_url = "http://localhost:9090"
+rate_limit_max_tokens = 100
+rate_limit_refill_rate = 10
+
+[upstreams]
+[[upstreams.providers]]
+name = "mevblocker"
+chain_id = 1
+https_url = "https://rpc.mevblocker.io/fast"
+wss_url = "wss://rpc.mevblocker.io/fast"
+weight = 1
+timeout_seconds = 30
+circuit_breaker_threshold = 2
+circuit_breaker_timeout_seconds = 1
+
+[[upstreams.providers]]
+name = "publicnode"
+chain_id = 1
+https_url = "https://ethereum-rpc.publicnode.com"
+wss_url = "wss://ethereum-rpc.publicnode.com"
+weight = 1
+timeout_seconds = 30
+circuit_breaker_threshold = 2
+circuit_breaker_timeout_seconds = 1
+
+[[upstreams.providers]]
+name = "tenderly"
+chain_id = 1
+https_url = "https://mainnet.gateway.tenderly.co"
+wss_url = "wss://mainnet.gateway.tenderly.co"
+weight = 1
+timeout_seconds = 30
+circuit_breaker_threshold = 2
+circuit_breaker_timeout_seconds = 1
+
+[[upstreams.providers]]
+name = "drpc"
+chain_id = 1
+https_url = "https://eth.drpc.org"
+wss_url = "wss://eth.drpc.org"
+weight = 1
+timeout_seconds = 30
+circuit_breaker_threshold = 2
+circuit_breaker_timeout_seconds = 1
+
+[cache]
+enabled = true
+cache_ttl_seconds = 300
+
+[cache.manager_config]
+retain_blocks = 1000
+enable_auto_cleanup = true
+cleanup_interval_seconds = 300
+cleanup_every_n_blocks = 100
+
+[cache.manager_config.log_cache]
+chunk_size = 1000
+max_exact_results = 10000
+max_bitmap_entries = 100000
+safety_depth = 12
+
+[cache.manager_config.block_cache]
+hot_window_size = 200
+max_headers = 20000
+max_bodies = 5000
+safety_depth = 12
+
+[cache.manager_config.transaction_cache]
+max_transactions = 40000
+max_receipts = 40000
+safety_depth = 12
+
+[cache.manager_config.reorg_manager]
+safety_depth = 64
+max_reorg_depth = 256
+reorg_detection_threshold = 3
+
+[health_check]
+interval_seconds = 60
+
+[auth]
+enabled = true
+database_url = "sqlite://db/auth.db"
+
+[metrics]
+enabled = true
+prometheus_port = 9090
+
+[logging]
+level = "debug"
+format = "pretty"

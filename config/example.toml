@@ -7,7 +7,6 @@ bind_port = 3030
 max_concurrent_requests = 100
 request_timeout_seconds = 30
 
-# Your current RPC providers from .env converted to clean TOML format
 [upstreams]
 [[upstreams.providers]]
 name = "mevblocker"
@@ -93,3 +92,16 @@ prometheus_port = 9090
 [logging]
 level = "info"
 format = "pretty"
+
+# Admin API Configuration (optional)
+# The admin API runs on a separate port and provides monitoring/management endpoints.
+# Disabled by default for security. Enable only if you need runtime management.
+[admin]
+enabled = false
+bind_address = "127.0.0.1"
+port = 3031
+# instance_name = "prism-node-1"
+# prometheus_url = "http://localhost:9090"
+# admin_token = "your-secure-token-here"  # Required in production!
+# rate_limit_max_tokens = 100
+# rate_limit_refill_rate = 10

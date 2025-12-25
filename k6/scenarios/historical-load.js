@@ -17,6 +17,7 @@ import {
   ethGetBlockByNumber,
   ethGetBlockByHash,
   ethGetLogs,
+  ethGetTransactionByHash,
   ethGetTransactionReceipt,
   getRandomBlock,
   getRandomBlockRange,
@@ -164,6 +165,29 @@ function randomBlockByHash() {
   return { res, method: 'eth_getBlockByHash' };
 }
 
+function randomTransactionByHash() {
+  // Try to use cached tx hash first
+  let txHash = getRandomTxHash();
+
+  if (!txHash) {
+    // Fallback: fetch a block first to get tx hashes
+    const { res: blockRes } = randomHistoricalBlocks();
+    if (blockRes.status !== 200) {
+      return { res: blockRes, method: 'eth_getBlockByNumber' };
+    }
+    txHash = getRandomTxHash();
+    if (!txHash) {
+      // Block had no transactions
+      return { res: blockRes, method: 'eth_getBlockByNumber' };
+    }
+  }
+
+  const payload = JSON.stringify(ethGetTransactionByHash(txHash));
+  const res = http.post(PRISM_URL, payload, params);
+
+  return { res, method: 'eth_getTransactionByHash' };
+}
+
 // Main Test Function
 
 export default function () {
@@ -189,6 +213,9 @@ export default function () {
           break;
         case 'RANDOM_BLOCK_BY_HASH':
           result = randomBlockByHash();
+          break;
+        case 'RANDOM_TRANSACTION_BY_HASH':
+          result = randomTransactionByHash();
           break;
       }
       break;

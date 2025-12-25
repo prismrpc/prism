@@ -300,6 +300,7 @@ mod tests {
             error: None,
             id: Arc::new(id),
             cache_status: None,
+            serving_upstream: None,
         }
     }
 

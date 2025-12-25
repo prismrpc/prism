@@ -489,6 +489,7 @@ fn stress_test_response(result: Option<serde_json::Value>) -> crate::types::Json
         error: None,
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     }
 }
 
@@ -597,6 +598,7 @@ fn stress_test_consensus_error_responses() {
         }),
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     // Create error responses with different error codes
@@ -610,6 +612,7 @@ fn stress_test_consensus_error_responses() {
         }),
         id: Arc::new(serde_json::json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     let success_response = stress_test_response(Some(serde_json::json!({"success": true})));

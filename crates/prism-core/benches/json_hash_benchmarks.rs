@@ -154,6 +154,7 @@ fn bench_response_hashing(c: &mut Criterion) {
         error: None,
         id: std::sync::Arc::new(json!(1)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     group.throughput(Throughput::Elements(1));
@@ -176,6 +177,7 @@ fn bench_response_hashing(c: &mut Criterion) {
         }),
         id: std::sync::Arc::new(json!(2)),
         cache_status: None,
+        serving_upstream: None,
     };
 
     group.bench_function("error_response_optimized", |b| {
@@ -209,6 +211,7 @@ fn bench_consensus_workload(c: &mut Criterion) {
             error: None,
             id: std::sync::Arc::new(json!(i)),
             cache_status: None,
+            serving_upstream: None,
         })
         .collect();
 

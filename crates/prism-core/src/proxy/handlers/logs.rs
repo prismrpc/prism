@@ -136,6 +136,7 @@ impl LogsHandler {
             error: None,
             id: Arc::clone(&request.id),
             cache_status: Some(CacheStatus::Full),
+            serving_upstream: None,
         })
     }
 
@@ -149,6 +150,7 @@ impl LogsHandler {
             error: None,
             id: Arc::new(serde_json::Value::Null),
             cache_status: Some(CacheStatus::Empty),
+            serving_upstream: None,
         }
     }
 
@@ -219,6 +221,7 @@ impl LogsHandler {
             error: None,
             id: Arc::clone(&request.id),
             cache_status: Some(CacheStatus::Partial),
+            serving_upstream: None,
         })
     }
 
@@ -426,6 +429,7 @@ impl LogsHandler {
             } else {
                 CacheStatus::PartialWithFailures
             }),
+            serving_upstream: None,
         })
     }
 

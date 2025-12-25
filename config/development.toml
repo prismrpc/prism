@@ -1,6 +1,8 @@
 # Prism RPC Aggregator Configuration - Development
 # This configuration is optimized for local development with pretty logging
-# and debug-friendly settings.
+# and debug-friendly settings. Admin API is disabled by default.
+#
+# For Admin API development, use: config/development.admin.toml
 #
 # Usage:
 #   PRISM_CONFIG=config/development.toml cargo run --bin server
@@ -14,7 +16,11 @@ bind_port = 3030
 max_concurrent_requests = 100
 request_timeout_seconds = 30
 
-# Your current RPC providers from .env converted to clean TOML format
+# Admin API disabled by default for core development
+# Use config/development.admin.toml to enable admin API
+[admin]
+enabled = false
+
 [upstreams]
 [[upstreams.providers]]
 name = "mevblocker"
@@ -63,8 +69,8 @@ cache_ttl_seconds = 300
 [cache.manager_config]
 retain_blocks = 1000
 enable_auto_cleanup = true
-cleanup_interval_seconds = 300  # 5 minutes
-cleanup_every_n_blocks = 100    # Trigger cleanup every 100 blocks
+cleanup_interval_seconds = 300
+cleanup_every_n_blocks = 100
 
 [cache.manager_config.log_cache]
 chunk_size = 1000
@@ -74,13 +80,13 @@ safety_depth = 12
 
 [cache.manager_config.block_cache]
 hot_window_size = 200
-max_headers = 10000
-max_bodies = 10000
+max_headers = 20000
+max_bodies = 5000
 safety_depth = 12
 
 [cache.manager_config.transaction_cache]
-max_transactions = 50000
-max_receipts = 50000
+max_transactions = 40000
+max_receipts = 40000
 safety_depth = 12
 
 [cache.manager_config.reorg_manager]
