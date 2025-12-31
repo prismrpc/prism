@@ -55,10 +55,11 @@ export const CONFIG = {
 
 // Traffic pattern weights for historical load testing
 export const HISTORICAL_PATTERNS = {
-  RANDOM_HISTORICAL_BLOCKS: 25,   // eth_getBlockByNumber
-  RANDOM_LOG_RANGES: 50,          // eth_getLogs (Prism's strength!)
+  RANDOM_HISTORICAL_BLOCKS: 20,   // eth_getBlockByNumber
+  RANDOM_LOG_RANGES: 45,          // eth_getLogs (Prism's strength!)
   RANDOM_HISTORICAL_RECEIPTS: 15, // eth_getTransactionReceipt
   RANDOM_BLOCK_BY_HASH: 10,       // eth_getBlockByHash
+  RANDOM_TRANSACTION_BY_HASH: 10, // eth_getTransactionByHash
 };
 
 // Traffic pattern weights for tip-of-chain testing

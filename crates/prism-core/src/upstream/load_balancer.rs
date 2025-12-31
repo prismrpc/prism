@@ -496,6 +496,46 @@ impl LoadBalancer {
         });
     }
 
+    /// Updates an upstream's configuration atomically.
+    ///
+    /// Uses atomic read-copy-update to replace the upstream without blocking readers.
+    /// The upstream is replaced in place, preserving its position in the list.
+    /// Returns true if the upstream was found and updated, false otherwise.
+    pub fn update_upstream(
+        &self,
+        name: &str,
+        new_config: UpstreamConfig,
+        http_client: Arc<HttpClient>,
+    ) -> bool {
+        // First check if the upstream exists
+        let exists = {
+            let upstreams = self.upstreams.load();
+            upstreams.iter().any(|u| u.config().name.as_ref() == name)
+        };
+
+        if !exists {
+            return false;
+        }
+
+        // Create the new upstream once, outside the rcu closure
+        let new_upstream = Arc::new(UpstreamEndpoint::new(new_config, http_client));
+        let name_owned = name.to_string();
+
+        self.upstreams.rcu(move |current| {
+            let mut new_upstreams = Vec::with_capacity(current.len());
+            for upstream in current.iter() {
+                if upstream.config().name.as_ref() == name_owned.as_str() {
+                    // Replace with new upstream using updated config
+                    new_upstreams.push(Arc::clone(&new_upstream));
+                } else {
+                    new_upstreams.push(upstream.clone());
+                }
+            }
+            new_upstreams
+        });
+        true
+    }
+
     /// Returns load balancer statistics including counts and average response times.
     pub async fn get_stats(&self) -> LoadBalancerStats {
         let upstreams = self.upstreams.load();
@@ -964,6 +1004,7 @@ mod tests {
 
         failing_upstream.circuit_breaker().on_failure().await;
         failing_upstream.circuit_breaker().on_failure().await;
+        failing_upstream.invalidate_health_cache(); // Cache invalidation needed after direct circuit breaker manipulation
 
         let healthy_upstreams = balancer.get_healthy_upstreams().await;
         assert_eq!(healthy_upstreams.len(), 1);

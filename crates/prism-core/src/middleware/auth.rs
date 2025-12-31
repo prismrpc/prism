@@ -64,6 +64,7 @@ impl ApiKeyAuth {
                 .iter()
                 .filter_map(|m| m.max_requests_per_day.map(|limit| (m.method_name.clone(), limit)))
                 .collect(),
+            scope: api_key_record.scope,
         };
 
         self.cache.insert(
@@ -220,6 +221,26 @@ mod tests {
         ) -> Result<(), AuthError> {
             Ok(())
         }
+
+        async fn get_usage_stats(
+            &self,
+            _api_key_id: i64,
+            _days: i64,
+        ) -> Result<Vec<crate::auth::repository::UsageStats>, AuthError> {
+            Ok(Vec::new())
+        }
+
+        async fn update_name(&self, _id: i64, _name: &str) -> Result<(), AuthError> {
+            Ok(())
+        }
+
+        async fn update_allowed_methods(
+            &self,
+            _id: i64,
+            _methods: Option<Vec<String>>,
+        ) -> Result<(), AuthError> {
+            Ok(())
+        }
     }
 
     fn create_test_api_key(id: i64, name: &str) -> ApiKey {
@@ -239,6 +260,7 @@ mod tests {
             last_used_at: None,
             is_active: true,
             expires_at: None,
+            scope: crate::auth::ApiKeyScope::Rpc,
         }
     }
 

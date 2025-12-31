@@ -172,6 +172,29 @@ impl CircuitBreaker {
     pub async fn get_failure_count(&self) -> u32 {
         self.inner.read().await.failure_count
     }
+
+    /// Returns the time remaining until the circuit breaker transitions from Open to `HalfOpen`.
+    ///
+    /// Returns `None` if:
+    /// - The circuit is not in the Open state
+    /// - The timeout has already expired (will transition to `HalfOpen` on next check)
+    ///
+    /// Returns `Some(duration)` with the remaining time if the circuit is Open and
+    /// the timeout has not yet expired.
+    pub async fn get_time_remaining(&self) -> Option<Duration> {
+        let inner = self.inner.read().await;
+
+        if inner.state != CircuitBreakerState::Open {
+            return None;
+        }
+
+        let last_failure = inner.last_failure_time?;
+        let elapsed = last_failure.elapsed();
+
+        // Use checked_sub to handle TOCTOU race where elapsed may exceed timeout
+        // between the implicit check and the subtraction
+        self.timeout.checked_sub(elapsed)
+    }
 }
 
 #[cfg(test)]

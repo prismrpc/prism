@@ -68,6 +68,36 @@ pub fn hex_to_u32(s: &str) -> Option<u32> {
     }
 }
 
+/// Parses variable-length hex string to a 32-byte big-endian array (uint256).
+/// Handles values like "0x0", "0xb59b9f7800", or full 32-byte hashes.
+/// The result is left-padded with zeros (big-endian format).
+#[must_use]
+pub fn hex_to_u256(hex: &str) -> Option<[u8; 32]> {
+    let hex_str = hex.strip_prefix("0x").unwrap_or(hex);
+
+    // Handle empty or too long values
+    if hex_str.is_empty() || hex_str.len() > 64 {
+        return None;
+    }
+
+    // Decode hex bytes
+    // Pad odd-length hex strings with leading zero
+    let padded_hex = if hex_str.len() % 2 == 1 {
+        format!("0{hex_str}")
+    } else {
+        hex_str.to_string()
+    };
+
+    let bytes = hex::decode(&padded_hex).ok()?;
+
+    // Left-pad to 32 bytes (big-endian)
+    let mut result = [0u8; 32];
+    let start = 32 - bytes.len();
+    result[start..].copy_from_slice(&bytes);
+
+    Some(result)
+}
+
 // --- Log Conversions ---
 
 /// Extracts log identifier from JSON-RPC log entry.
@@ -176,13 +206,28 @@ pub fn json_block_to_block_header(block: &Value) -> Option<BlockHeader> {
 }
 
 /// Extracts transaction hashes from JSON-RPC block to create `BlockBody`.
-/// Only works with blocks containing transaction hashes (not full tx objects).
+/// Handles both formats:
+/// - Transaction hashes as strings (when `fullTransactions=false`)
+/// - Full transaction objects (when `fullTransactions=true`) - extracts hash from each object
 #[must_use]
 pub fn json_block_to_block_body(block: &Value) -> Option<BlockBody> {
     let hash = hex_to_array::<32>(block.get("hash")?.as_str()?)?;
     let transactions = block.get("transactions")?.as_array()?;
-    let tx_hashes: Vec<_> =
-        transactions.iter().filter_map(|tx| hex_to_array::<32>(tx.as_str()?)).collect();
+    let tx_hashes: Vec<_> = transactions
+        .iter()
+        .filter_map(|tx| {
+            // Handle both formats: hash string or full transaction object
+            if let Some(hash_str) = tx.as_str() {
+                // Transaction is a string (hash only) - fullTransactions=false
+                hex_to_array::<32>(hash_str)
+            } else if let Some(tx_obj) = tx.as_object() {
+                // Transaction is an object (full tx) - fullTransactions=true
+                tx_obj.get("hash").and_then(|h| h.as_str()).and_then(hex_to_array::<32>)
+            } else {
+                None
+            }
+        })
+        .collect();
     Some(BlockBody { hash, transactions: tx_hashes })
 }
 
@@ -266,28 +311,79 @@ pub fn block_header_and_body_to_json(header: &BlockHeader, body: &BlockBody) -> 
 
 /// Converts JSON-RPC transaction to internal format.
 /// Handles optional fields (null for pending transactions).
+/// Supports all transaction types:
+/// - Legacy (type 0x0): uses `gasPrice`
+/// - EIP-2930 (type 0x1): uses `gasPrice` + `accessList`
+/// - EIP-1559 (type 0x2): uses `maxFeePerGas` + `maxPriorityFeePerGas` (no `gasPrice`)
+/// - EIP-4844 (type 0x3): uses `maxFeePerGas` + `maxPriorityFeePerGas` + `maxFeePerBlobGas`
 pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionRecord> {
-    let hash = hex_to_array::<32>(tx.get("hash")?.as_str()?)?;
+    // Helper macro to log missing/invalid fields
+    macro_rules! require_field {
+        ($field:expr, $parser:expr) => {
+            match $parser {
+                Some(v) => v,
+                None => {
+                    tracing::warn!(
+                        field = $field,
+                        tx_hash = ?tx.get("hash").and_then(|v| v.as_str()),
+                        raw_value = ?tx.get($field),
+                        "transaction conversion failed: missing or invalid field"
+                    );
+                    return None;
+                }
+            }
+        };
+    }
+
+    let hash = require_field!(
+        "hash",
+        tx.get("hash").and_then(|v| v.as_str()).and_then(hex_to_array::<32>)
+    );
     let block_hash = tx.get("blockHash").and_then(|v| v.as_str()).and_then(hex_to_array::<32>);
     let block_number = tx.get("blockNumber").and_then(|v| v.as_str()).and_then(hex_to_u64);
     let transaction_index =
         tx.get("transactionIndex").and_then(|v| v.as_str()).and_then(hex_to_u32);
-    let from = hex_to_array::<20>(tx.get("from")?.as_str()?)?;
+    let from = require_field!(
+        "from",
+        tx.get("from").and_then(|v| v.as_str()).and_then(hex_to_array::<20>)
+    );
     let to = tx.get("to").and_then(|v| v.as_str()).and_then(hex_to_array::<20>);
-    let value = hex_to_array::<32>(tx.get("value")?.as_str()?)?;
-    let gas_price = hex_to_array::<32>(tx.get("gasPrice")?.as_str()?)?;
-    let gas_limit = hex_to_u64(tx.get("gas")?.as_str()?)?;
-    let nonce = hex_to_u64(tx.get("nonce")?.as_str()?)?;
-    let data = hex_to_bytes(tx.get("input")?.as_str()?)?;
+    // Value is variable-length hex (e.g., "0x0", "0xb59b9f7800"), needs padding to 32 bytes
+    let value =
+        require_field!("value", tx.get("value").and_then(|v| v.as_str()).and_then(hex_to_u256));
 
-    // v is u8: parse as hex with 0x prefix, otherwise decimal
-    let v_str = tx.get("v")?.as_str()?;
-    let v = v_str
-        .strip_prefix("0x")
-        .map_or_else(|| v_str.parse::<u8>().ok(), |hex| u8::from_str_radix(hex, 16).ok())?;
+    // EIP-2718 tx types (0-255): 0=Legacy, 1=EIP-2930, 2=EIP-1559, 3=EIP-4844
+    #[allow(clippy::cast_possible_truncation)]
+    let tx_type = tx.get("type").and_then(|v| v.as_str()).and_then(hex_to_u64).and_then(|v| {
+        if v <= 255 {
+            Some(v as u8)
+        } else {
+            tracing::warn!(tx_type = v, "Invalid transaction type exceeds u8 range");
+            None
+        }
+    });
 
-    let r = hex_to_array::<32>(tx.get("r")?.as_str()?)?;
-    let s = hex_to_array::<32>(tx.get("s")?.as_str()?)?;
+    // Parse gas pricing fields - all are variable-length hex values
+    let gas_price = tx.get("gasPrice").and_then(|v| v.as_str()).and_then(hex_to_u256);
+    let max_fee_per_gas = tx.get("maxFeePerGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
+    let max_priority_fee_per_gas =
+        tx.get("maxPriorityFeePerGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
+    let max_fee_per_blob_gas =
+        tx.get("maxFeePerBlobGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
+
+    let gas_limit =
+        require_field!("gas", tx.get("gas").and_then(|v| v.as_str()).and_then(hex_to_u64));
+    let nonce =
+        require_field!("nonce", tx.get("nonce").and_then(|v| v.as_str()).and_then(hex_to_u64));
+    let data =
+        require_field!("input", tx.get("input").and_then(|v| v.as_str()).and_then(hex_to_bytes));
+
+    // v is u64: can be large for EIP-155 legacy transactions (chainId * 2 + 35/36)
+    let v = require_field!("v", tx.get("v").and_then(|v| v.as_str()).and_then(hex_to_u64));
+
+    // r and s are ECDSA signature components - can be <32 bytes if they have leading zeros
+    let r = require_field!("r", tx.get("r").and_then(|v| v.as_str()).and_then(hex_to_u256));
+    let s = require_field!("s", tx.get("s").and_then(|v| v.as_str()).and_then(hex_to_u256));
 
     Some(TransactionRecord {
         hash,
@@ -297,7 +393,11 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
         from,
         to,
         value,
+        tx_type,
         gas_price,
+        max_fee_per_gas,
+        max_priority_fee_per_gas,
+        max_fee_per_blob_gas,
         gas_limit,
         nonce,
         data,
@@ -310,6 +410,7 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
 /// Converts cached transaction back to JSON-RPC format.
 ///
 /// Uses optimized hex formatting (`format_hex_large`) for large input data (>256 bytes).
+/// Properly handles all transaction types by serializing the appropriate gas pricing fields.
 #[must_use]
 pub fn transaction_record_to_json(transaction: &TransactionRecord) -> Value {
     let mut tx = serde_json::Map::new();
@@ -346,7 +447,32 @@ pub fn transaction_record_to_json(transaction: &TransactionRecord) -> Value {
     }
 
     tx.insert("value".to_string(), Value::String(format_hash32(&transaction.value)));
-    tx.insert("gasPrice".to_string(), Value::String(format_hash32(&transaction.gas_price)));
+
+    // Include transaction type if present
+    if let Some(tx_type) = transaction.tx_type {
+        tx.insert("type".to_string(), Value::String(format_hex_u64(u64::from(tx_type))));
+    }
+
+    // Serialize gas pricing fields based on what's available
+    if let Some(gas_price) = transaction.gas_price {
+        tx.insert("gasPrice".to_string(), Value::String(format_hash32(&gas_price)));
+    }
+    if let Some(max_fee_per_gas) = transaction.max_fee_per_gas {
+        tx.insert("maxFeePerGas".to_string(), Value::String(format_hash32(&max_fee_per_gas)));
+    }
+    if let Some(max_priority_fee_per_gas) = transaction.max_priority_fee_per_gas {
+        tx.insert(
+            "maxPriorityFeePerGas".to_string(),
+            Value::String(format_hash32(&max_priority_fee_per_gas)),
+        );
+    }
+    if let Some(max_fee_per_blob_gas) = transaction.max_fee_per_blob_gas {
+        tx.insert(
+            "maxFeePerBlobGas".to_string(),
+            Value::String(format_hash32(&max_fee_per_blob_gas)),
+        );
+    }
+
     tx.insert("gas".to_string(), Value::String(format_hex_u64(transaction.gas_limit)));
     tx.insert("nonce".to_string(), Value::String(format_hex_u64(transaction.nonce)));
 
@@ -359,7 +485,7 @@ pub fn transaction_record_to_json(transaction: &TransactionRecord) -> Value {
         }),
     );
 
-    tx.insert("v".to_string(), Value::String(format_hex_u64(u64::from(transaction.v))));
+    tx.insert("v".to_string(), Value::String(format_hex_u64(transaction.v)));
     tx.insert("r".to_string(), Value::String(format_hash32(&transaction.r)));
     tx.insert("s".to_string(), Value::String(format_hash32(&transaction.s)));
 
@@ -564,6 +690,279 @@ mod tests {
     }
 
     #[test]
+    fn test_hex_to_u256() {
+        // Zero value
+        let zero = hex_to_u256("0x0").unwrap();
+        assert_eq!(zero, [0u8; 32]);
+
+        // Small value (5 bytes) - should be left-padded
+        let small = hex_to_u256("0xb59b9f7800").unwrap();
+        let mut expected = [0u8; 32];
+        expected[27..32].copy_from_slice(&[0xb5, 0x9b, 0x9f, 0x78, 0x00]);
+        assert_eq!(small, expected);
+
+        // Odd-length hex (should pad with leading zero)
+        let odd = hex_to_u256("0x123").unwrap();
+        let mut expected_odd = [0u8; 32];
+        expected_odd[30..32].copy_from_slice(&[0x01, 0x23]);
+        assert_eq!(odd, expected_odd);
+
+        // Full 32-byte value
+        let full =
+            hex_to_u256("0x0000000000000000000000000000000000000000000000000000000000000001")
+                .unwrap();
+        let mut expected_full = [0u8; 32];
+        expected_full[31] = 1;
+        assert_eq!(full, expected_full);
+
+        // Too long should fail
+        assert!(hex_to_u256("0x00000000000000000000000000000000000000000000000000000000000000001")
+            .is_none());
+
+        // Empty should fail
+        assert!(hex_to_u256("0x").is_none());
+    }
+
+    #[test]
+    fn test_hex_to_u256_leading_zeros() {
+        // Test that values with leading zeros stripped are correctly padded
+        // These are real examples from geth where leading zero bytes are stripped
+
+        // r value with 63 hex chars (missing one leading zero nibble)
+        // "0xd75..." should become "0x0d75..." when padded
+        let r_stripped = "0xd7536a2cecb99c6b785769e345b6be4e112a336209e15acd8ff4643d7521cd4";
+        assert_eq!(r_stripped.len(), 65); // 0x + 63 chars
+        let r_padded = hex_to_u256(r_stripped).unwrap();
+        // First byte should be 0x0d (the 'd' with leading zero)
+        assert_eq!(r_padded[0], 0x0d, "First byte should have leading zero restored");
+        assert_eq!(r_padded[1], 0x75, "Second byte should be 0x75");
+
+        // s value with 62 hex chars (missing two leading zero nibbles = one full byte)
+        let s_very_stripped = "0xeefaab9fb3d5330cddd143653ed4a2cce73c4367d7f9ed879f9682e579b2e8";
+        assert_eq!(s_very_stripped.len(), 64); // 0x + 62 chars
+        let s_padded = hex_to_u256(s_very_stripped).unwrap();
+        // First byte should be 0x00 (full byte of leading zeros)
+        assert_eq!(s_padded[0], 0x00, "First byte should be zero");
+        assert_eq!(s_padded[1], 0xee, "Second byte should be 0xee");
+
+        // Minimal value: "0x1" -> should be all zeros except last byte
+        let minimal = hex_to_u256("0x1").unwrap();
+        for (i, byte) in minimal.iter().enumerate().take(31) {
+            assert_eq!(*byte, 0x00, "Byte {i} should be zero for minimal value");
+        }
+        assert_eq!(minimal[31], 0x01, "Last byte should be 0x01");
+
+        // Verify numeric equivalence: padded and unpadded represent same value
+        let full_r = "0x0d7536a2cecb99c6b785769e345b6be4e112a336209e15acd8ff4643d7521cd4";
+        let full_r_parsed = hex_to_u256(full_r).unwrap();
+        assert_eq!(r_padded, full_r_parsed, "Stripped and full r should be equal");
+    }
+
+    #[test]
+    fn test_transaction_roundtrip_legacy() {
+        // Legacy transaction with compact hex values (as returned by geth)
+        let original_json = serde_json::json!({
+            "hash": "0xe36d216b68600a17795301c19c499641f61ac0c088121bb4c7d5b9ff2ed76021",
+            "blockHash": "0xabababababababababababababababababababababababababababababababab",
+            "blockNumber": "0x1234",
+            "transactionIndex": "0x5",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "value": "0xb59b9f7800",  // Compact: 5 bytes, not 32
+            "gas": "0x5208",
+            "gasPrice": "0x3b9aca00",  // Compact gas price
+            "nonce": "0x42",
+            "input": "0x",
+            "type": "0x0",
+            "v": "0x1c",  // Legacy v value (28)
+            "r": "0xd7536a2cecb99c6b785769e345b6be4e112a336209e15acd8ff4643d7521cd4",  // 63 hex chars!
+            "s": "0x1d2e640e84f58097604a89a3def961d10e6da51e1acda42a8ebb104512ca13a"   // 63 hex chars!
+        });
+
+        // Parse to TransactionRecord
+        let record = json_transaction_to_transaction_record(&original_json)
+            .expect("Failed to parse transaction");
+
+        // Convert back to JSON
+        let result_json = transaction_record_to_json(&record);
+
+        // Verify critical fields match (values should be equivalent, format may differ)
+        assert_eq!(
+            result_json.get("hash").unwrap().as_str().unwrap().to_lowercase(),
+            original_json.get("hash").unwrap().as_str().unwrap().to_lowercase()
+        );
+        assert_eq!(
+            result_json.get("from").unwrap().as_str().unwrap().to_lowercase(),
+            original_json.get("from").unwrap().as_str().unwrap().to_lowercase()
+        );
+        assert_eq!(
+            result_json.get("to").unwrap().as_str().unwrap().to_lowercase(),
+            original_json.get("to").unwrap().as_str().unwrap().to_lowercase()
+        );
+
+        // Value: original is compact, result may be padded - verify numeric equivalence
+        let orig_value =
+            hex_to_u256(original_json.get("value").unwrap().as_str().unwrap()).unwrap();
+        let result_value =
+            hex_to_u256(result_json.get("value").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(orig_value, result_value, "value mismatch");
+
+        // Gas price
+        let orig_gas_price =
+            hex_to_u256(original_json.get("gasPrice").unwrap().as_str().unwrap()).unwrap();
+        let result_gas_price =
+            hex_to_u256(result_json.get("gasPrice").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(orig_gas_price, result_gas_price, "gasPrice mismatch");
+
+        // r and s (signature components with stripped leading zeros)
+        let orig_r = hex_to_u256(original_json.get("r").unwrap().as_str().unwrap()).unwrap();
+        let result_r = hex_to_u256(result_json.get("r").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(orig_r, result_r, "r signature mismatch");
+
+        let orig_s = hex_to_u256(original_json.get("s").unwrap().as_str().unwrap()).unwrap();
+        let result_s = hex_to_u256(result_json.get("s").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(orig_s, result_s, "s signature mismatch");
+
+        // v value
+        let orig_v = hex_to_u64(original_json.get("v").unwrap().as_str().unwrap()).unwrap();
+        let result_v = hex_to_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(orig_v, result_v, "v mismatch");
+    }
+
+    #[test]
+    fn test_transaction_roundtrip_eip1559() {
+        // EIP-1559 transaction (type 2) with compact hex values
+        let original_json = serde_json::json!({
+            "hash": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "blockHash": "0xabababababababababababababababababababababababababababababababab",
+            "blockNumber": "0xabc",
+            "transactionIndex": "0x0",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "value": "0x0",  // Zero value transfer
+            "gas": "0x5208",
+            "maxFeePerGas": "0x59682f00",
+            "maxPriorityFeePerGas": "0x3b9aca00",
+            "nonce": "0x1",
+            "input": "0x1234",
+            "type": "0x2",
+            "v": "0x1",  // EIP-1559: just parity (0 or 1)
+            "r": "0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            "s": "0x1"  // Very small s value (1 byte after stripping)
+        });
+
+        let record = json_transaction_to_transaction_record(&original_json)
+            .expect("Failed to parse EIP-1559 transaction");
+
+        let result_json = transaction_record_to_json(&record);
+
+        // Verify type
+        assert_eq!(
+            hex_to_u64(result_json.get("type").unwrap().as_str().unwrap()).unwrap(),
+            2,
+            "type should be 2 for EIP-1559"
+        );
+
+        // Verify EIP-1559 gas fields
+        let orig_max_fee =
+            hex_to_u256(original_json.get("maxFeePerGas").unwrap().as_str().unwrap()).unwrap();
+        let result_max_fee =
+            hex_to_u256(result_json.get("maxFeePerGas").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(orig_max_fee, result_max_fee, "maxFeePerGas mismatch");
+
+        let orig_priority =
+            hex_to_u256(original_json.get("maxPriorityFeePerGas").unwrap().as_str().unwrap())
+                .unwrap();
+        let result_priority =
+            hex_to_u256(result_json.get("maxPriorityFeePerGas").unwrap().as_str().unwrap())
+                .unwrap();
+        assert_eq!(orig_priority, result_priority, "maxPriorityFeePerGas mismatch");
+
+        // Verify s with minimal value
+        let orig_s = hex_to_u256(original_json.get("s").unwrap().as_str().unwrap()).unwrap();
+        let result_s = hex_to_u256(result_json.get("s").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(orig_s, result_s, "s signature mismatch for minimal value");
+
+        // EIP-1559 should NOT have gasPrice in output
+        assert!(result_json.get("gasPrice").is_none(), "EIP-1559 should not have gasPrice");
+    }
+
+    #[test]
+    fn test_transaction_roundtrip_eip155_high_chainid() {
+        // EIP-155 legacy transaction on a chain with high chainId (like devnet 1337)
+        // v = chainId * 2 + 35 = 1337 * 2 + 35 = 2709 = 0xa95
+        let original_json = serde_json::json!({
+            "hash": "0x5555555555555555555555555555555555555555555555555555555555555555",
+            "blockHash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "blockNumber": "0x100",
+            "transactionIndex": "0x0",
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "0xde0b6b3a7640000",  // 1 ETH in wei
+            "gas": "0x5208",
+            "gasPrice": "0x4a817c800",
+            "nonce": "0x0",
+            "input": "0x",
+            "type": "0x0",
+            "v": "0xa95",  // 2709 decimal - doesn't fit in u8!
+            "r": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "s": "0xabcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        });
+
+        let record = json_transaction_to_transaction_record(&original_json)
+            .expect("Failed to parse high chainId transaction");
+
+        // Verify v is stored correctly as u64
+        assert_eq!(record.v, 2709, "v should be 2709 for chainId 1337");
+
+        let result_json = transaction_record_to_json(&record);
+
+        let result_v = hex_to_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(result_v, 2709, "v roundtrip failed for high chainId");
+    }
+
+    #[test]
+    fn test_transaction_roundtrip_contract_creation() {
+        // Contract creation transaction (to is null)
+        let original_json = serde_json::json!({
+            "hash": "0x9999999999999999999999999999999999999999999999999999999999999999",
+            "blockHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "blockNumber": "0x50",
+            "transactionIndex": "0x3",
+            "from": "0x3333333333333333333333333333333333333333",
+            "to": null,  // Contract creation!
+            "value": "0x0",
+            "gas": "0x100000",
+            "gasPrice": "0x3b9aca00",
+            "nonce": "0x5",
+            "input": "0x608060405234801561001057600080fd5b50",  // Contract bytecode
+            "type": "0x0",
+            "v": "0x1b",
+            "r": "0x1234567890123456789012345678901234567890123456789012345678901234",
+            "s": "0x1234567890123456789012345678901234567890123456789012345678901234"
+        });
+
+        let record = json_transaction_to_transaction_record(&original_json)
+            .expect("Failed to parse contract creation transaction");
+
+        assert!(record.to.is_none(), "to should be None for contract creation");
+
+        let result_json = transaction_record_to_json(&record);
+
+        assert!(
+            result_json.get("to").unwrap().is_null(),
+            "to should be null in JSON for contract creation"
+        );
+
+        // Verify input data preserved
+        let orig_input =
+            hex_to_bytes(original_json.get("input").unwrap().as_str().unwrap()).unwrap();
+        let result_input =
+            hex_to_bytes(result_json.get("input").unwrap().as_str().unwrap()).unwrap();
+        assert_eq!(orig_input, result_input, "input bytecode mismatch");
+    }
+
+    #[test]
     fn test_log_conversion() {
         let json_log = serde_json::json!({
             "blockNumber": "0x3e8",
@@ -697,7 +1096,11 @@ mod tests {
             from: [0xCC; 20],
             to: Some([0xDD; 20]),
             value: [0xEE; 32],
-            gas_price: [0xFF; 32],
+            tx_type: Some(0),
+            gas_price: Some([0xFF; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 42,
             data: vec![0x11; 100],
@@ -960,7 +1363,7 @@ mod tests {
 
     #[test]
     fn test_json_block_to_block_body_with_full_tx_objects() {
-        // When transactions are full objects (not hashes), they should be skipped
+        // When transactions are full objects (not hashes), extract hash from object
         let block = serde_json::json!({
             "hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "transactions": [
@@ -970,8 +1373,8 @@ mod tests {
         });
         let body = json_block_to_block_body(&block);
         assert!(body.is_some());
-        // Full tx object is skipped (as_str returns None)
-        assert_eq!(body.unwrap().transactions.len(), 1);
+        // Both transaction hashes are extracted (from object and string)
+        assert_eq!(body.unwrap().transactions.len(), 2);
     }
 
     #[test]
@@ -1206,8 +1609,149 @@ mod tests {
     }
 
     #[test]
+    fn test_json_transaction_to_transaction_record_eip1559_with_max_fee() {
+        // EIP-1559 transaction has maxFeePerGas and maxPriorityFeePerGas, no gasPrice
+        let tx = serde_json::json!({
+            "hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "blockHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "blockNumber": "0x3e8",
+            "transactionIndex": "0x5",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "value": "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+            "maxFeePerGas": "0x0000000000000000000000000000000000000000000000000000000077359400",
+            "maxPriorityFeePerGas": "0x0000000000000000000000000000000000000000000000000000000059682f00",
+            "gas": "0x5208",
+            "nonce": "0x2a",
+            "input": "0x",
+            "v": "0x1",
+            "r": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "s": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "type": "0x2"
+        });
+
+        let record = json_transaction_to_transaction_record(&tx);
+        assert!(record.is_some());
+        let record = record.unwrap();
+
+        assert_eq!(record.hash, [0xAA; 32]);
+        assert_eq!(record.block_number, Some(1000));
+        assert_eq!(record.tx_type, Some(2));
+        // EIP-1559 transaction should not have gasPrice
+        assert!(record.gas_price.is_none());
+        // Should have maxFeePerGas
+        assert!(record.max_fee_per_gas.is_some());
+        assert_eq!(record.max_fee_per_gas.unwrap()[31], 0x00);
+        assert_eq!(record.max_fee_per_gas.unwrap()[30], 0x94);
+        assert_eq!(record.gas_limit, 21000);
+    }
+
+    #[test]
+    fn test_json_transaction_to_transaction_record_eip4844_blob_tx() {
+        // EIP-4844 blob transaction with maxFeePerBlobGas
+        let tx = serde_json::json!({
+            "hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "blockHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "blockNumber": "0x100",
+            "transactionIndex": "0x0",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "value": "0x0000000000000000000000000000000000000000000000000000000000000000",
+            "maxFeePerGas": "0x0000000000000000000000000000000000000000000000000000000077359400",
+            "maxPriorityFeePerGas": "0x0000000000000000000000000000000000000000000000000000000059682f00",
+            "maxFeePerBlobGas": "0x0000000000000000000000000000000000000000000000000000000000000001",
+            "gas": "0x5208",
+            "nonce": "0x0",
+            "input": "0x",
+            "v": "0x1",
+            "r": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "s": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "type": "0x3"
+        });
+
+        let record = json_transaction_to_transaction_record(&tx);
+        assert!(record.is_some());
+        let record = record.unwrap();
+
+        assert_eq!(record.hash, [0xAA; 32]);
+        assert_eq!(record.tx_type, Some(3));
+        // EIP-4844 transaction should not have gasPrice
+        assert!(record.gas_price.is_none());
+        // Should have maxFeePerGas
+        assert!(record.max_fee_per_gas.is_some());
+        assert_eq!(record.max_fee_per_gas.unwrap()[31], 0x00);
+        assert_eq!(record.max_fee_per_gas.unwrap()[30], 0x94);
+        // Should have maxFeePerBlobGas
+        assert!(record.max_fee_per_blob_gas.is_some());
+        assert_eq!(record.max_fee_per_blob_gas.unwrap()[31], 0x01);
+    }
+
+    #[test]
+    fn test_json_transaction_to_transaction_record_legacy_prefers_gas_price() {
+        // Legacy transaction with both gasPrice and maxFeePerGas (should prefer gasPrice)
+        let tx = serde_json::json!({
+            "hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "blockHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "blockNumber": "0x3e8",
+            "transactionIndex": "0x5",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "value": "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+            "gasPrice": "0x0000000000000000000000000000000000000000000000000000000012345678",
+            "maxFeePerGas": "0x0000000000000000000000000000000000000000000000000000000077359400",
+            "gas": "0x5208",
+            "nonce": "0x2a",
+            "input": "0x",
+            "v": "0x1b",
+            "r": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "s": "0x2222222222222222222222222222222222222222222222222222222222222222"
+        });
+
+        let record = json_transaction_to_transaction_record(&tx);
+        assert!(record.is_some());
+        let record = record.unwrap();
+
+        // Should have gasPrice
+        assert!(record.gas_price.is_some());
+        let gas_price = record.gas_price.unwrap();
+        assert_eq!(gas_price[31], 0x78);
+        assert_eq!(gas_price[30], 0x56);
+        assert_eq!(gas_price[29], 0x34);
+        assert_eq!(gas_price[28], 0x12);
+        // Should also have maxFeePerGas (both can be present)
+        assert!(record.max_fee_per_gas.is_some());
+    }
+
+    #[test]
+    fn test_json_transaction_to_transaction_record_missing_both_gas_prices() {
+        // Transaction missing both gasPrice and maxFeePerGas should now succeed (both are optional)
+        let tx = serde_json::json!({
+            "hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "blockHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "blockNumber": "0x3e8",
+            "transactionIndex": "0x5",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "value": "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+            "gas": "0x5208",
+            "nonce": "0x2a",
+            "input": "0x",
+            "v": "0x1b",
+            "r": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "s": "0x2222222222222222222222222222222222222222222222222222222222222222"
+        });
+
+        let record = json_transaction_to_transaction_record(&tx);
+        assert!(record.is_some());
+        let record = record.unwrap();
+        // Both should be None
+        assert!(record.gas_price.is_none());
+        assert!(record.max_fee_per_gas.is_none());
+    }
+
+    #[test]
     fn test_transaction_record_to_json_null_fields() {
-        // Test null field serialization (lines 424, 430, 439, 447)
+        // Test null field serialization
         let transaction = TransactionRecord {
             hash: [0xAA; 32],
             block_hash: None,
@@ -1216,7 +1760,11 @@ mod tests {
             from: [0xCC; 20],
             to: None,
             value: [0; 32],
-            gas_price: [0; 32],
+            tx_type: Some(0),
+            gas_price: Some([0; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 21000,
             nonce: 0,
             data: vec![],
@@ -1235,7 +1783,7 @@ mod tests {
 
     #[test]
     fn test_transaction_record_to_json_large_input_data() {
-        // Test format_hex_large path for data > 256 bytes (lines 457-461)
+        // Test format_hex_large path for data > 256 bytes
         let transaction = TransactionRecord {
             hash: [0xAA; 32],
             block_hash: Some([0xBB; 32]),
@@ -1244,7 +1792,11 @@ mod tests {
             from: [0xCC; 20],
             to: Some([0xDD; 20]),
             value: [0; 32],
-            gas_price: [0; 32],
+            tx_type: Some(0),
+            gas_price: Some([0; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 500_000,
             nonce: 0,
             data: vec![0xAB; 500], // > 256 bytes triggers format_hex_large
@@ -1260,8 +1812,50 @@ mod tests {
     }
 
     #[test]
+    fn test_json_transaction_eip1559_roundtrip() {
+        // Test full roundtrip for EIP-1559 transaction
+        let original_json = serde_json::json!({
+            "hash": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "blockHash": "0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "blockNumber": "0x3e8",
+            "transactionIndex": "0x5",
+            "from": "0x1234567890123456789012345678901234567890",
+            "to": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+            "value": "0x0000000000000000000000000000000000000000000000000de0b6b3a7640000",
+            "maxFeePerGas": "0x0000000000000000000000000000000000000000000000000000000077359400",
+            "maxPriorityFeePerGas": "0x0000000000000000000000000000000000000000000000000000000059682f00",
+            "gas": "0x5208",
+            "nonce": "0x2a",
+            "input": "0x",
+            "v": "0x1b",
+            "r": "0x1111111111111111111111111111111111111111111111111111111111111111",
+            "s": "0x2222222222222222222222222222222222222222222222222222222222222222",
+            "type": "0x2"
+        });
+
+        // Parse to record
+        let record = json_transaction_to_transaction_record(&original_json).unwrap();
+
+        // Verify fields are parsed correctly
+        assert_eq!(record.tx_type, Some(2));
+        assert!(record.gas_price.is_none());
+        assert!(record.max_fee_per_gas.is_some());
+        assert!(record.max_priority_fee_per_gas.is_some());
+        assert!(record.max_fee_per_blob_gas.is_none());
+
+        // Convert back to JSON
+        let json = transaction_record_to_json(&record);
+
+        // Verify critical fields are present
+        assert_eq!(json.get("type").unwrap().as_str().unwrap(), "0x2");
+        assert!(json.get("maxFeePerGas").is_some());
+        assert!(json.get("maxPriorityFeePerGas").is_some());
+        assert!(json.get("gasPrice").is_none());
+    }
+
+    #[test]
     fn test_transaction_record_to_json_small_input_data() {
-        // Test format_hex path for data <= 256 bytes (line 460)
+        // Test format_hex path for data <= 256 bytes
         let transaction = TransactionRecord {
             hash: [0xAA; 32],
             block_hash: Some([0xBB; 32]),
@@ -1270,7 +1864,11 @@ mod tests {
             from: [0xCC; 20],
             to: Some([0xDD; 20]),
             value: [0; 32],
-            gas_price: [0; 32],
+            tx_type: Some(0),
+            gas_price: Some([0; 32]),
+            max_fee_per_gas: None,
+            max_priority_fee_per_gas: None,
+            max_fee_per_blob_gas: None,
             gas_limit: 100_000,
             nonce: 0,
             data: vec![0xAB; 100], // <= 256 bytes uses format_hex

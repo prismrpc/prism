@@ -49,6 +49,84 @@ pub async fn api_key_middleware(
     Ok(next.run(request).await)
 }
 
+/// State for admin API authentication middleware.
+#[derive(Clone)]
+pub struct AdminAuthState {
+    /// API key authentication system (if enabled).
+    pub api_key_auth: Option<Arc<ApiKeyAuth>>,
+}
+
+impl AdminAuthState {
+    /// Creates a new admin auth state.
+    #[must_use]
+    pub fn new(api_key_auth: Option<Arc<ApiKeyAuth>>) -> Self {
+        Self { api_key_auth }
+    }
+}
+
+/// Admin API authentication middleware with scope-based authorization.
+///
+/// Uses `X-API-Key` header for authentication via the unified auth system.
+/// Requires the API key to have `admin` or `full` scope.
+///
+/// # Authentication Flow
+///
+/// 1. Extract API key from `X-API-Key` header
+/// 2. Authenticate via `ApiKeyAuth`
+/// 3. Verify the key has `admin` or `full` scope
+/// 4. Insert `AuthenticatedKey` into request extensions
+///
+/// If no API key auth is configured, all requests are allowed (dev mode).
+///
+/// # Errors
+///
+/// Returns `StatusCode::UNAUTHORIZED` if:
+/// - API key is missing or invalid
+/// - Authentication fails
+///
+/// Returns `StatusCode::FORBIDDEN` if:
+/// - API key scope doesn't include `admin` access
+pub async fn admin_auth_middleware(
+    State(state): State<AdminAuthState>,
+    mut request: Request<Body>,
+    next: Next,
+) -> Result<Response, StatusCode> {
+    // If API key auth is not configured, allow all requests (dev mode)
+    let Some(auth) = &state.api_key_auth else {
+        return Ok(next.run(request).await);
+    };
+
+    // Extract API key from header
+    let api_key =
+        request
+            .headers()
+            .get("X-API-Key")
+            .and_then(|v| v.to_str().ok())
+            .ok_or_else(|| {
+                tracing::warn!("missing X-API-Key header for admin API");
+                StatusCode::UNAUTHORIZED
+            })?;
+
+    // Authenticate the API key
+    let auth_key = auth.authenticate(api_key).await.map_err(|e| {
+        tracing::warn!(error = %e, "admin API authentication failed");
+        StatusCode::UNAUTHORIZED
+    })?;
+
+    // Check that the key has admin scope
+    if !auth_key.scope.allows_admin() {
+        tracing::warn!(
+            key_name = %auth_key.name,
+            scope = %auth_key.scope.as_str(),
+            "API key does not have admin scope"
+        );
+        return Err(StatusCode::FORBIDDEN);
+    }
+
+    request.extensions_mut().insert(auth_key);
+    Ok(next.run(request).await)
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -63,8 +141,8 @@ mod tests {
     };
     use prism_core::auth::{
         api_key::{ApiKey, MethodPermission},
-        repository::ApiKeyRepository,
-        AuthError, AuthenticatedKey,
+        repository::{ApiKeyRepository, UsageStats},
+        ApiKeyScope, AuthError, AuthenticatedKey,
     };
     use std::sync::Arc;
     use tower::ServiceExt;
@@ -105,6 +183,7 @@ mod tests {
                     updated_at: chrono::Utc::now(),
                     last_used_at: None,
                     expires_at: None,
+                    scope: ApiKeyScope::default(),
                 }))
             } else {
                 Ok(None)
@@ -134,6 +213,7 @@ mod tests {
                     updated_at: chrono::Utc::now(),
                     last_used_at: None,
                     expires_at: None,
+                    scope: ApiKeyScope::default(),
                 }))
             } else {
                 Ok(None)
@@ -159,6 +239,7 @@ mod tests {
                     updated_at: chrono::Utc::now(),
                     last_used_at: None,
                     expires_at: None,
+                    scope: ApiKeyScope::default(),
                 }))
             } else {
                 Ok(None)
@@ -216,6 +297,26 @@ mod tests {
             _name: &str,
             _max_tokens: u32,
             _refill_rate: u32,
+        ) -> Result<(), AuthError> {
+            Ok(())
+        }
+
+        async fn get_usage_stats(
+            &self,
+            _api_key_id: i64,
+            _days: i64,
+        ) -> Result<Vec<UsageStats>, AuthError> {
+            Ok(vec![])
+        }
+
+        async fn update_name(&self, _id: i64, _name: &str) -> Result<(), AuthError> {
+            Ok(())
+        }
+
+        async fn update_allowed_methods(
+            &self,
+            _id: i64,
+            _methods: Option<Vec<String>>,
         ) -> Result<(), AuthError> {
             Ok(())
         }

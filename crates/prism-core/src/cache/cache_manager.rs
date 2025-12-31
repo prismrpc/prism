@@ -809,6 +809,7 @@ impl CacheManager {
         let block_stats = self.block_cache.get_stats().await;
         let tx_stats = self.transaction_cache.get_stats().await;
 
+        // Size metrics
         stats.log_store_size = log_stats.log_store_size;
         stats.header_cache_size = block_stats.header_cache_size;
         stats.body_cache_size = block_stats.body_cache_size;
@@ -818,6 +819,23 @@ impl CacheManager {
         stats.total_log_ids_cached = log_stats.total_log_ids_cached;
         stats.bitmap_memory_usage = log_stats.bitmap_memory_usage;
         stats.hot_window_size = block_stats.hot_window_size;
+
+        // Hit/miss metrics for block cache
+        stats.block_cache_hits = block_stats.block_cache_hits;
+        stats.block_cache_misses = block_stats.block_cache_misses;
+
+        // Hit/miss metrics for transaction cache
+        stats.transaction_cache_hits = tx_stats.transaction_cache_hits;
+        stats.transaction_cache_misses = tx_stats.transaction_cache_misses;
+
+        // Hit/miss metrics for receipt cache
+        stats.receipt_cache_hits = tx_stats.receipt_cache_hits;
+        stats.receipt_cache_misses = tx_stats.receipt_cache_misses;
+
+        // Log cache hit/miss (from log stats if available)
+        stats.log_cache_hits = log_stats.log_cache_hits;
+        stats.log_cache_misses = log_stats.log_cache_misses;
+        stats.log_cache_partial_hits = log_stats.log_cache_partial_hits;
 
         stats
     }

@@ -387,6 +387,14 @@ impl HedgeExecutor {
         Some((p50, p95, p99, avg))
     }
 
+    /// Removes latency tracker for a specific upstream.
+    ///
+    /// This is used when removing an upstream to clean up its tracking data.
+    pub fn remove_latency_tracker(&self, upstream_name: &str) {
+        self.latency_trackers.remove(upstream_name);
+        debug!(upstream = %upstream_name, "removed upstream latency tracker");
+    }
+
     /// Clears all latency tracking data.
     pub fn clear_latency_data(&self) {
         self.latency_trackers.clear();

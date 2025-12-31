@@ -508,6 +508,7 @@ mod tests {
             error,
             id: Arc::new(json!(1)),
             cache_status: None,
+            serving_upstream: None,
         }
     }
 
@@ -1444,6 +1445,7 @@ mod tests {
                 error: None,
                 id: Arc::new(json!(id1)),
                 cache_status: None,
+                serving_upstream: None,
             };
 
             let response2 = JsonRpcResponse {
@@ -1452,6 +1454,7 @@ mod tests {
                 error: None,
                 id: Arc::new(json!(id2)),
                 cache_status: None,
+                serving_upstream: None,
             };
 
             let hash1 = hash_json_response(&response1);

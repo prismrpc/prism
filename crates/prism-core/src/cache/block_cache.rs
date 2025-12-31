@@ -50,6 +50,11 @@ pub struct BlockCache {
 
     stats: Arc<RwLock<CacheStats>>,
     stats_dirty: std::sync::atomic::AtomicBool,
+
+    /// Atomic hit counter for lock-free metrics
+    hits: std::sync::atomic::AtomicU64,
+    /// Atomic miss counter for lock-free metrics
+    misses: std::sync::atomic::AtomicU64,
 }
 
 /// Circular buffer for recent blocks with O(1) insert/lookup.
@@ -250,16 +255,23 @@ impl BlockCache {
             hot_window: Arc::new(RwLock::new(HotWindow::new(config.hot_window_size))),
             stats: Arc::new(RwLock::new(CacheStats::default())),
             stats_dirty: std::sync::atomic::AtomicBool::new(false),
+            hits: std::sync::atomic::AtomicU64::new(0),
+            misses: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
-    /// Inserts a block header into both the hot window (if recent) and persistent storage.
+    /// Inserts a block header into both the hot window and persistent storage.
+    /// Note: Headers are inserted into hot window unconditionally. The hot window's
+    /// `insert()` method will automatically handle window positioning and ignore blocks
+    /// outside the valid range.
     pub async fn insert_header(&self, header: BlockHeader) {
         trace!(block = header.number, hash = ?header.hash, "inserting header");
 
         let header_arc = Arc::new(header);
 
-        if self.is_in_hot_window(header_arc.number) {
+        // Insert into hot window with empty body placeholder
+        // This allows the hot window to track recent blocks and auto-advance
+        {
             let block_number = header_arc.number;
             let hash = header_arc.hash;
             let empty_body = Arc::new(BlockBody { hash, transactions: vec![] });
@@ -285,14 +297,15 @@ impl BlockCache {
         let body_arc = Arc::new(body);
 
         if let Some(header_arc) = self.get_header_by_hash(&body_arc.hash) {
-            if self.is_in_hot_window(header_arc.number) {
-                let block_number = header_arc.number;
-                let body_clone = Arc::clone(&body_arc);
+            let block_number = header_arc.number;
+            let body_clone = Arc::clone(&body_arc);
 
-                let mut hot_window = self.hot_window.write().await;
-                if let Some(existing_header) = hot_window.get_header(block_number) {
-                    hot_window.insert(block_number, existing_header, body_clone);
-                }
+            let mut hot_window = self.hot_window.write().await;
+            if let Some(existing_header) = hot_window.get_header(block_number) {
+                hot_window.insert(block_number, existing_header, body_clone);
+            } else {
+                // Header exists in cache but not in hot window yet, insert both
+                hot_window.insert(block_number, header_arc, body_clone);
             }
         }
 
@@ -319,7 +332,6 @@ impl BlockCache {
 
         let hot_window_inserts: Vec<(u64, Arc<BlockHeader>, Arc<BlockBody>)> = header_arcs
             .iter()
-            .filter(|header_arc| self.is_in_hot_window(header_arc.number))
             .map(|header_arc| {
                 let empty_body =
                     Arc::new(BlockBody { hash: header_arc.hash, transactions: vec![] });
@@ -365,13 +377,8 @@ impl BlockCache {
         let hot_window_updates: Vec<(u64, Arc<BlockHeader>, Arc<BlockBody>)> = body_arcs
             .iter()
             .filter_map(|body_arc| {
-                self.get_header_by_hash(&body_arc.hash).and_then(|header_arc| {
-                    if self.is_in_hot_window(header_arc.number) {
-                        Some((header_arc.number, header_arc, Arc::clone(body_arc)))
-                    } else {
-                        None
-                    }
-                })
+                self.get_header_by_hash(&body_arc.hash)
+                    .map(|header_arc| (header_arc.number, header_arc, Arc::clone(body_arc)))
             })
             .collect();
 
@@ -444,9 +451,16 @@ impl BlockCache {
         &self,
         block_number: u64,
     ) -> Option<(Arc<BlockHeader>, Arc<BlockBody>)> {
-        let header = self.get_header_by_number(block_number)?;
-        let body = self.get_body_by_hash(&header.hash)?;
-        Some((header, body))
+        let header = self.get_header_by_number(block_number);
+        let body = header.as_ref().and_then(|h| self.get_body_by_hash(&h.hash));
+
+        if let (Some(h), Some(b)) = (header, body) {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some((h, b))
+        } else {
+            self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
     }
 
     #[must_use]
@@ -454,13 +468,16 @@ impl BlockCache {
         &self,
         block_hash: &[u8; 32],
     ) -> Option<(Arc<BlockHeader>, Arc<BlockBody>)> {
-        let header = self.get_header_by_hash(block_hash)?;
-        let body = self.get_body_by_hash(block_hash)?;
-        Some((header, body))
-    }
+        let header = self.get_header_by_hash(block_hash);
+        let body = header.as_ref().and_then(|_| self.get_body_by_hash(block_hash));
 
-    fn is_in_hot_window(&self, block_number: u64) -> bool {
-        self.hot_window.try_read().is_ok_and(|hw| hw.contains_block(block_number))
+        if let (Some(h), Some(b)) = (header, body) {
+            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some((h, b))
+        } else {
+            self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            None
+        }
     }
 
     /// Removes a block from all caches, typically called during chain reorganizations.
@@ -546,8 +563,11 @@ impl BlockCache {
     }
 
     pub async fn get_stats(&self) -> CacheStats {
-        // Update stats if dirty flag is set
-        if self.stats_dirty.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        // Fast path: check dirty flag with cheap load operation first
+        // Only use swap (expensive read-modify-write) if actually dirty
+        if self.stats_dirty.load(std::sync::atomic::Ordering::Relaxed) &&
+            self.stats_dirty.swap(false, std::sync::atomic::Ordering::Relaxed)
+        {
             self.compute_stats_internal().await;
         }
         self.stats.read().await.clone()
@@ -566,6 +586,20 @@ impl BlockCache {
         stats.header_cache_size = header_cache_size;
         stats.body_cache_size = body_cache_size;
         stats.hot_window_size = hot_window_size;
+        stats.block_cache_hits = self.hits.load(std::sync::atomic::Ordering::Relaxed);
+        stats.block_cache_misses = self.misses.load(std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the current hit count for this cache.
+    #[must_use]
+    pub fn hit_count(&self) -> u64 {
+        self.hits.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Returns the current miss count for this cache.
+    #[must_use]
+    pub fn miss_count(&self) -> u64 {
+        self.misses.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Removes blocks older than the safe head minus retention period.
@@ -1245,9 +1279,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_hot_window_stats() {
-        // Note: BlockCache's is_in_hot_window checks if block is already in hot window
-        // For stats, we verify header_cache_size and body_cache_size which reflect
-        // the DashMap contents, not the hot window circular buffer
+        // Verify that blocks are inserted into both hot window and DashMap caches
+        // header_cache_size and body_cache_size reflect DashMap contents
         let config = BlockCacheConfig { hot_window_size: 5, ..Default::default() };
         let cache = BlockCache::new(&config).expect("valid config");
 
@@ -1294,5 +1327,61 @@ mod tests {
         // Body should exist in DashMap but not in hot window
         let body = cache.get_body_by_hash(&[99u8; 32]);
         assert!(body.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_hit_miss_tracking_accuracy() {
+        let config = BlockCacheConfig::default();
+        let cache = BlockCache::new(&config).expect("valid config");
+
+        // Initial state
+        assert_eq!(cache.hit_count(), 0);
+        assert_eq!(cache.miss_count(), 0);
+
+        // Insert a complete block
+        let header = create_test_header(1000, 1);
+        let body = create_test_body(1, 2);
+        cache.insert_header(header).await;
+        cache.insert_body(body).await;
+
+        // Hit: both header and body exist
+        let result = cache.get_block_by_number(1000);
+        assert!(result.is_some());
+        assert_eq!(cache.hit_count(), 1);
+        assert_eq!(cache.miss_count(), 0);
+
+        // Hit: header exists with empty body placeholder in hot window
+        // After the fix, insert_header now populates the hot window immediately
+        let header_only = create_test_header(2000, 2);
+        cache.insert_header(header_only).await;
+        let result = cache.get_block_by_number(2000);
+        assert!(result.is_some());
+        let (_, body) = result.unwrap();
+        assert_eq!(body.transactions.len(), 0, "Should have empty body placeholder");
+        assert_eq!(cache.hit_count(), 2);
+        assert_eq!(cache.miss_count(), 0);
+
+        // Miss: header doesn't exist at all
+        let result = cache.get_block_by_number(3000);
+        assert!(result.is_none());
+        assert_eq!(cache.hit_count(), 2);
+        assert_eq!(cache.miss_count(), 1);
+
+        // Another hit on the original block
+        let result = cache.get_block_by_hash(&[1u8; 32]);
+        assert!(result.is_some());
+        assert_eq!(cache.hit_count(), 3);
+        assert_eq!(cache.miss_count(), 1);
+
+        // Hit: header exists with empty body (by hash)
+        let result = cache.get_block_by_hash(&[2u8; 32]);
+        assert!(result.is_some());
+        assert_eq!(cache.hit_count(), 4);
+        assert_eq!(cache.miss_count(), 1);
+
+        // Verify stats are updated correctly
+        let stats = cache.get_stats().await;
+        assert_eq!(stats.block_cache_hits, 4);
+        assert_eq!(stats.block_cache_misses, 1);
     }
 }

@@ -94,7 +94,8 @@ mod tests {
             CacheManager::new(&CacheManagerConfig::default(), chain_state)
                 .expect("valid test cache config"),
         );
-        ProxyEngine::new(cache, manager, metrics)
+        let alert_manager = Arc::new(crate::alerts::AlertManager::new());
+        ProxyEngine::new(cache, manager, metrics, alert_manager)
     }
 
     /// Helper to create a request with custom jsonrpc version

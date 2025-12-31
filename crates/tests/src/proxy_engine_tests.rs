@@ -57,7 +57,10 @@ fn create_test_proxy_engine(upstream_url: &str) -> ProxyEngine {
     let metrics_collector =
         Arc::new(MetricsCollector::new().expect("Failed to create metrics collector"));
 
-    ProxyEngine::new(cache_manager, upstream_manager, metrics_collector)
+    // Create alert manager
+    let alert_manager = Arc::new(prism_core::alerts::AlertManager::new());
+
+    ProxyEngine::new(cache_manager, upstream_manager, metrics_collector, alert_manager)
 }
 
 #[tokio::test]

@@ -61,7 +61,10 @@ fn create_test_context(upstream_url: &str) -> Arc<SharedContext> {
     let metrics_collector =
         Arc::new(MetricsCollector::new().expect("Failed to create metrics collector"));
 
-    Arc::new(SharedContext { cache_manager, upstream_manager, metrics_collector })
+    // Create alert manager
+    let alert_manager = Arc::new(prism_core::alerts::AlertManager::new());
+
+    Arc::new(SharedContext { cache_manager, upstream_manager, metrics_collector, alert_manager })
 }
 
 /// Creates an `eth_getLogs` JSON-RPC request.

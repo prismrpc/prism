@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
+    alerts::AlertManager,
     cache::CacheManager,
     metrics::MetricsCollector,
     types::{is_method_allowed, JsonRpcRequest, JsonRpcResponse, JSONRPC_VERSION_COW},
@@ -22,6 +23,7 @@ pub struct SharedContext {
     pub cache_manager: Arc<CacheManager>,
     pub upstream_manager: Arc<UpstreamManager>,
     pub metrics_collector: Arc<MetricsCollector>,
+    pub alert_manager: Arc<AlertManager>,
 }
 
 impl SharedContext {
@@ -62,6 +64,7 @@ impl SharedContext {
                     error: Some(JsonRpcError { code, message, data: None }),
                     id: Arc::clone(&request.id),
                     cache_status: Some(CacheStatus::Miss),
+                    serving_upstream: None,
                 })
             }
             Err(e) => {
@@ -110,8 +113,14 @@ impl ProxyEngine {
         cache_manager: Arc<CacheManager>,
         upstream_manager: Arc<UpstreamManager>,
         metrics_collector: Arc<MetricsCollector>,
+        alert_manager: Arc<AlertManager>,
     ) -> Self {
-        let ctx = Arc::new(SharedContext { cache_manager, upstream_manager, metrics_collector });
+        let ctx = Arc::new(SharedContext {
+            cache_manager,
+            upstream_manager,
+            metrics_collector,
+            alert_manager,
+        });
 
         let logs_handler = LogsHandler::new(Arc::clone(&ctx));
         let blocks_handler = BlocksHandler::new(Arc::clone(&ctx));
@@ -134,20 +143,48 @@ impl ProxyEngine {
         &self,
         request: JsonRpcRequest,
     ) -> Result<JsonRpcResponse, ProxyError> {
-        let method = &request.method;
+        // Clone method early to avoid borrow issues
+        let method = request.method.clone();
 
         if let Err(validation_error) = request.validate() {
-            self.ctx.metrics_collector.record_validation_error(method, &validation_error);
+            self.ctx.metrics_collector.record_validation_error(&method, &validation_error);
             return Err(ProxyError::Validation(validation_error));
         }
 
-        if !is_method_allowed(method) {
-            let error = ProxyError::MethodNotSupported(method.clone());
-            self.ctx.metrics_collector.record_proxy_error(method, &error);
+        if !is_method_allowed(&method) {
+            let error = ProxyError::MethodNotSupported(method);
+            self.ctx.metrics_collector.record_proxy_error(&error.to_string(), &error);
             return Err(error);
         }
 
-        self.handle_request(request).await
+        // Record request metrics with timing
+        let start = std::time::Instant::now();
+        let result = self.handle_request(request).await;
+        // Use try_into with saturating fallback to handle theoretical overflow
+        // (as_millis returns u128, though overflow requires 213+ day duration)
+        let latency_ms: u64 = start.elapsed().as_millis().try_into().unwrap_or(u64::MAX);
+
+        // Determine upstream name from response metadata
+        let upstream = if let Ok(ref response) = result {
+            match response.cache_status {
+                Some(crate::types::CacheStatus::Full) => "cache",
+                Some(crate::types::CacheStatus::Partial) => "cache_partial",
+                _ => {
+                    // Use actual upstream name if available, otherwise default to "upstream"
+                    response.serving_upstream.as_deref().unwrap_or("upstream")
+                }
+            }
+        } else {
+            "upstream"
+        };
+
+        // Record the request
+        self.ctx
+            .metrics_collector
+            .record_request(&method, upstream, result.is_ok(), latency_ms)
+            .await;
+
+        result
     }
 
     /// Routes the request to the appropriate handler based on method name.
@@ -229,5 +266,27 @@ impl ProxyEngine {
     #[must_use]
     pub fn get_metrics_collector(&self) -> &Arc<MetricsCollector> {
         &self.ctx.metrics_collector
+    }
+
+    /// Returns a reference to the alert manager.
+    ///
+    /// Used by the admin API for:
+    /// - Managing alert rules
+    /// - Creating, acknowledging, and resolving alerts
+    /// - Listing active and historical alerts
+    #[must_use]
+    pub fn get_alert_manager(&self) -> &Arc<AlertManager> {
+        &self.ctx.alert_manager
+    }
+
+    /// Returns a reference to the upstream manager.
+    ///
+    /// Used by the admin API for:
+    /// - Listing all configured upstreams
+    /// - Getting individual upstream details and metrics
+    /// - Triggering health checks and circuit breaker resets
+    #[must_use]
+    pub fn get_upstream_manager(&self) -> &Arc<UpstreamManager> {
+        &self.ctx.upstream_manager
     }
 }

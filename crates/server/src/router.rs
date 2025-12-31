@@ -5,7 +5,44 @@ use prism_core::{
 };
 use serde_json::Value;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{error, info};
+
+/// Serializes a response, returning an internal error JSON on failure.
+/// This avoids panics while still providing a valid JSON-RPC response.
+fn serialize_response(response: &JsonRpcResponse) -> Value {
+    serde_json::to_value(response).unwrap_or_else(|e| {
+        error!("Failed to serialize JsonRpcResponse: {}", e);
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "error": {"code": -32603, "message": "Internal error: serialization failed"},
+            "id": null
+        })
+    })
+}
+
+/// Serializes a batch of responses, returning an internal error JSON on failure.
+fn serialize_batch(responses: &[Value]) -> Value {
+    serde_json::to_value(responses).unwrap_or_else(|e| {
+        error!("Failed to serialize batch response: {}", e);
+        serde_json::json!([{
+            "jsonrpc": "2.0",
+            "error": {"code": -32603, "message": "Internal error: serialization failed"},
+            "id": null
+        }])
+    })
+}
+
+/// Attempts to extract the "id" field from a JSON value.
+/// Per JSON-RPC 2.0 spec, the ID should be preserved in error responses when possible.
+/// Returns Null if the ID cannot be extracted (e.g., malformed request).
+fn extract_request_id(payload: &Value) -> Arc<Value> {
+    if let Value::Object(map) = payload {
+        if let Some(id) = map.get("id") {
+            return Arc::new(id.clone());
+        }
+    }
+    Arc::new(Value::Null)
+}
 
 type BatchResponse = (StatusCode, [(&'static str, String); 1], Json<Value>);
 
@@ -13,11 +50,6 @@ type BatchResponse = (StatusCode, [(&'static str, String); 1], Json<Value>);
 ///
 /// Per JSON-RPC 2.0 spec, a batch request is an array of request objects.
 /// This handler detects arrays vs objects and processes accordingly.
-///
-/// # Panics
-///
-/// Panics if `JsonRpcResponse` serialization fails, which should never occur as the type
-/// is guaranteed to be serializable.
 pub async fn handle_rpc(
     axum::extract::State(proxy_engine): axum::extract::State<Arc<ProxyEngine>>,
     Json(payload): Json<Value>,
@@ -30,6 +62,9 @@ pub async fn handle_rpc(
 }
 
 async fn handle_single_request(proxy_engine: Arc<ProxyEngine>, payload: Value) -> BatchResponse {
+    // Extract ID early to preserve it in error responses (per JSON-RPC 2.0 spec)
+    let request_id = extract_request_id(&payload);
+
     let request: JsonRpcRequest = match serde_json::from_value(payload) {
         Ok(req) => req,
         Err(e) => {
@@ -41,16 +76,14 @@ async fn handle_single_request(proxy_engine: Arc<ProxyEngine>, payload: Value) -
                     message: format!("Parse error: {e}"),
                     data: None,
                 }),
-                id: Arc::new(serde_json::Value::Null),
+                id: request_id,
                 cache_status: None,
+                serving_upstream: None,
             };
             return (
                 StatusCode::BAD_REQUEST,
                 [("x-cache-status", "MISS".to_string())],
-                Json(
-                    serde_json::to_value(error_response)
-                        .expect("JsonRpcResponse serialization cannot fail"),
-                ),
+                Json(serialize_response(&error_response)),
             );
         }
     };
@@ -65,10 +98,7 @@ async fn handle_single_request(proxy_engine: Arc<ProxyEngine>, payload: Value) -
             (
                 StatusCode::OK,
                 [("x-cache-status", cache_status_header)],
-                Json(
-                    serde_json::to_value(response)
-                        .expect("JsonRpcResponse serialization cannot fail"),
-                ),
+                Json(serialize_response(&response)),
             )
         }
         Err(e) => {
@@ -86,15 +116,13 @@ async fn handle_single_request(proxy_engine: Arc<ProxyEngine>, payload: Value) -
                 }),
                 id: Arc::new(serde_json::Value::Null),
                 cache_status: None,
+                serving_upstream: None,
             };
 
             (
                 StatusCode::BAD_REQUEST,
                 [("x-cache-status", "MISS".to_string())],
-                Json(
-                    serde_json::to_value(error_response)
-                        .expect("JsonRpcResponse serialization cannot fail"),
-                ),
+                Json(serialize_response(&error_response)),
             )
         }
     }
@@ -116,14 +144,12 @@ fn validate_batch_payload(payload: Value) -> Result<Vec<Value>, BatchResponse> {
             }),
             id: Arc::new(serde_json::Value::Null),
             cache_status: None,
+            serving_upstream: None,
         };
         Err((
             StatusCode::BAD_REQUEST,
             [("x-cache-status", "MISS".to_string())],
-            Json(
-                serde_json::to_value(error_response)
-                    .expect("JsonRpcResponse serialization cannot fail"),
-            ),
+            Json(serialize_response(&error_response)),
         ))
     }
 }
@@ -142,8 +168,7 @@ async fn process_batch_item(
                     matches!(status, CacheStatus::Full | CacheStatus::Partial | CacheStatus::Empty)
                 });
 
-                let response_value = serde_json::to_value(response)
-                    .expect("JsonRpcResponse serialization cannot fail");
+                let response_value = serialize_response(&response);
 
                 (response_value, has_cache_hit)
             }
@@ -154,9 +179,9 @@ async fn process_batch_item(
                     error: Some(JsonRpcError { code: -32603, message: e.to_string(), data: None }),
                     id: item_id,
                     cache_status: None,
+                    serving_upstream: None,
                 };
-                let response_value = serde_json::to_value(error_response)
-                    .expect("JsonRpcResponse serialization cannot fail");
+                let response_value = serialize_response(&error_response);
 
                 (response_value, false)
             }
@@ -172,9 +197,9 @@ async fn process_batch_item(
             }),
             id: item_id,
             cache_status: None,
+            serving_upstream: None,
         };
-        let response_value = serde_json::to_value(error_response)
-            .expect("JsonRpcResponse serialization cannot fail");
+        let response_value = serialize_response(&error_response);
 
         (response_value, false)
     }
@@ -242,11 +267,7 @@ async fn handle_batch_request(proxy_engine: Arc<ProxyEngine>, payload: Value) ->
         .get_metrics_collector()
         .record_batch_request(batch_size, duration_ms);
 
-    (
-        StatusCode::OK,
-        [("x-cache-status", cache_status_header)],
-        Json(serde_json::to_value(responses).expect("Vec<Value> serialization cannot fail")),
-    )
+    (StatusCode::OK, [("x-cache-status", cache_status_header)], Json(serialize_batch(&responses)))
 }
 
 #[allow(clippy::unused_async)]
@@ -323,8 +344,14 @@ mod tests {
                 .expect("valid test upstream config"),
         );
         let metrics_collector = Arc::new(MetricsCollector::new().expect("valid test metrics"));
+        let alert_manager = Arc::new(prism_core::alerts::AlertManager::new());
 
-        Arc::new(ProxyEngine::new(cache_manager, upstream_manager, metrics_collector))
+        Arc::new(ProxyEngine::new(
+            cache_manager,
+            upstream_manager,
+            metrics_collector,
+            alert_manager,
+        ))
     }
 
     async fn body_to_bytes(body: Body) -> Vec<u8> {

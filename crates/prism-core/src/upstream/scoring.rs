@@ -601,6 +601,14 @@ impl ScoringEngine {
         ))
     }
 
+    /// Removes metrics for a specific upstream.
+    ///
+    /// This is used when removing an upstream to clean up its tracking data.
+    pub fn remove_metrics(&self, upstream_name: &str) {
+        self.metrics.remove(upstream_name);
+        tracing::debug!(upstream = %upstream_name, "removed upstream metrics");
+    }
+
     /// Clears all metrics.
     pub fn clear(&self) {
         self.metrics.clear();

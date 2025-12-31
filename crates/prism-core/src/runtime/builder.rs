@@ -1,6 +1,7 @@
 //! Builder pattern for initializing the Prism runtime with configurable components.
 
 use crate::{
+    alerts::AlertManager,
     cache::{reorg_manager::ReorgManager, CacheManager},
     chain::ChainState,
     config::AppConfig,
@@ -220,10 +221,16 @@ impl PrismRuntimeBuilder {
             debug!("Health checker disabled");
             None
         };
+
+        // Create alert manager
+        let alert_manager = Arc::new(AlertManager::new());
+        debug!("Alert manager initialized");
+
         let proxy_engine = Arc::new(ProxyEngine::new(
             cache_manager.clone(),
             upstream_manager.clone(),
             metrics_collector.clone(),
+            alert_manager,
         ));
         debug!("Proxy engine initialized");
         let components = PrismComponents::new(

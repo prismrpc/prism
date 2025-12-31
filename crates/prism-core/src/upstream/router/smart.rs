@@ -41,6 +41,7 @@ impl SmartRouter {
             .await?;
 
         let latency_ms = result.metadata.duration_ms;
+        let mut consensus_upstream: Option<Arc<str>> = None;
 
         // Record success for all upstreams in the winning consensus group
         for group in &result.metadata.response_groups {
@@ -50,6 +51,10 @@ impl SmartRouter {
             {
                 for upstream_name in &group.upstreams {
                     ctx.scoring_engine.record_success(upstream_name, latency_ms);
+                    // Store first upstream name from consensus group for metrics
+                    if consensus_upstream.is_none() {
+                        consensus_upstream = Some(Arc::from(upstream_name.as_ref()));
+                    }
                 }
                 break;
             }
@@ -67,7 +72,10 @@ impl SmartRouter {
             }
         }
 
-        Ok(result.response)
+        let mut response = result.response;
+        // Set serving upstream to the first upstream in the consensus group
+        response.serving_upstream = consensus_upstream;
+        Ok(response)
     }
 
     /// Routes using score-based selection.
@@ -94,7 +102,7 @@ impl SmartRouter {
         let upstream_name = upstream.config().name.clone();
         let request_timeout = Duration::from_secs(15);
 
-        let result = tokio::time::timeout(request_timeout, upstream.send_request(request))
+        let mut result = tokio::time::timeout(request_timeout, upstream.send_request(request))
             .await
             .map_err(|_| {
                 warn!(timeout_secs = request_timeout.as_secs(), "scored request timed out");
@@ -133,6 +141,11 @@ impl SmartRouter {
             }
         }
 
+        // Set the serving upstream name in the response for metrics tracking
+        if let Ok(ref mut response) = result {
+            response.serving_upstream = Some(upstream_name);
+        }
+
         result
     }
 
@@ -150,7 +163,8 @@ impl SmartRouter {
         let primary_name = capable_upstreams[0].config().name.clone();
         let start = std::time::Instant::now();
 
-        let result = ctx.hedger.execute_hedged(Arc::new(request.clone()), capable_upstreams).await;
+        let mut result =
+            ctx.hedger.execute_hedged(Arc::new(request.clone()), capable_upstreams).await;
 
         let latency_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
 
@@ -184,6 +198,11 @@ impl SmartRouter {
             }
         }
 
+        // Set the serving upstream name in the response for metrics tracking
+        if let Ok(ref mut response) = result {
+            response.serving_upstream = Some(primary_name);
+        }
+
         result
     }
 
@@ -202,7 +221,7 @@ impl SmartRouter {
         let start = std::time::Instant::now();
         let request_timeout = Duration::from_secs(15);
 
-        let result = tokio::time::timeout(request_timeout, upstream.send_request(request))
+        let mut result = tokio::time::timeout(request_timeout, upstream.send_request(request))
             .await
             .map_err(|_| {
                 warn!(timeout_secs = request_timeout.as_secs(), "response-time request timed out");
@@ -239,6 +258,11 @@ impl SmartRouter {
                     }
                 }
             }
+        }
+
+        // Set the serving upstream name in the response for metrics tracking
+        if let Ok(ref mut response) = result {
+            response.serving_upstream = Some(upstream_name);
         }
 
         result
