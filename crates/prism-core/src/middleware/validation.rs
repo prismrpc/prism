@@ -1,4 +1,7 @@
-use crate::types::{is_method_allowed, JsonRpcRequest};
+use crate::{
+    types::{is_method_allowed, JsonRpcRequest},
+    utils::block_param::{BlockParameter, BlockRef, BlockTag},
+};
 
 impl JsonRpcRequest {
     /// Validates a JSON-RPC request for correctness and security.
@@ -95,9 +98,7 @@ impl JsonRpcRequest {
     /// characters to prevent oversized inputs.
     fn validate_block_parameter(param: &serde_json::Value) -> Result<(), ValidationError> {
         if let Some(block_str) = param.as_str() {
-            const VALID_TAGS: &[&str] = &["latest", "earliest", "pending", "safe", "finalized"];
-
-            if !VALID_TAGS.contains(&block_str) && !block_str.starts_with("0x") {
+            if !BlockTag::is_tag(block_str) && !block_str.starts_with("0x") {
                 return Err(ValidationError::InvalidBlockParameter(block_str.to_string()));
             }
 
@@ -117,23 +118,19 @@ impl JsonRpcRequest {
     /// Parses a block number from JSON-RPC parameter format.
     ///
     /// Supports hex strings (0x prefix), decimal strings, and block tags.
-    /// Block tags "latest" and "pending" map to `u64::MAX`, "earliest" maps to 0.
+    /// Block tags "latest", "pending", "safe", and "finalized" map to `u64::MAX`, "earliest" maps to 0.
     fn parse_block_number(value: &serde_json::Value) -> Result<u64, ValidationError> {
-        if let Some(s) = value.as_str() {
-            if s == "latest" || s == "pending" {
-                return Ok(u64::MAX);
+        let s = value
+            .as_str()
+            .ok_or_else(|| ValidationError::InvalidBlockParameter(format!("{value:?}")))?;
+
+        match BlockParameter::parse(s) {
+            Ok(BlockRef::Number(n)) => Ok(n),
+            Ok(BlockRef::Tag(BlockTag::Latest | BlockTag::Pending | BlockTag::Safe | BlockTag::Finalized)) => {
+                Ok(u64::MAX)
             }
-            if s == "earliest" {
-                return Ok(0);
-            }
-            if let Some(s) = s.strip_prefix("0x") {
-                u64::from_str_radix(s, 16)
-                    .map_err(|_| ValidationError::InvalidBlockParameter(s.to_string()))
-            } else {
-                s.parse().map_err(|_| ValidationError::InvalidBlockParameter(s.to_string()))
-            }
-        } else {
-            Err(ValidationError::InvalidBlockParameter(format!("{value:?}")))
+            Ok(BlockRef::Tag(BlockTag::Earliest)) => Ok(0),
+            Err(_) => Err(ValidationError::InvalidBlockParameter(s.to_string())),
         }
     }
 }

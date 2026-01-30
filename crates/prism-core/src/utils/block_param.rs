@@ -38,6 +38,17 @@ pub enum BlockTag {
     Finalized,
 }
 
+impl BlockTag {
+    /// All standard Ethereum block tags.
+    pub const ALL: &'static [&'static str] = &["latest", "earliest", "pending", "safe", "finalized"];
+
+    /// Returns `true` if the given string is a valid block tag.
+    #[must_use]
+    pub fn is_tag(s: &str) -> bool {
+        Self::ALL.contains(&s)
+    }
+}
+
 /// Implement `TryFrom` for idiomatic Rust conversion
 impl TryFrom<&str> for BlockRef {
     type Error = ParseError;

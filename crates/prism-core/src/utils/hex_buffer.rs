@@ -120,12 +120,17 @@ impl serde::Serialize for HexSerializer<'_> {
     where
         S: serde::Serializer,
     {
-        let mut output = String::with_capacity(2 + self.bytes.len() * 2);
-        output.push_str("0x");
-        for byte in self.bytes {
-            write!(&mut output, "{byte:02x}").map_err(serde::ser::Error::custom)?;
-        }
-        serializer.serialize_str(&output)
+        HEX_BUFFER.with(|buffer| {
+            let mut buf = buffer.borrow_mut();
+            buf.clear();
+            buf.push_str("0x");
+
+            for byte in self.bytes {
+                write!(&mut buf, "{byte:02x}").map_err(serde::ser::Error::custom)?;
+            }
+
+            serializer.serialize_str(&buf)
+        })
     }
 }
 
@@ -323,6 +328,79 @@ fn hex_digit_to_u8(c: u8) -> Option<u8> {
         b'A'..=b'F' => Some(c - b'A' + 10),
         _ => None,
     }
+}
+
+/// Parses hex or decimal string to `u64`.
+///
+/// Handles "0x" prefix for hex. For unprefixed strings, tries decimal parsing first,
+/// then falls back to hex. Returns `None` if invalid or overflow.
+///
+/// # Examples
+///
+/// ```
+/// # use prism_core::utils::hex_buffer::parse_hex_or_decimal_u64;
+/// assert_eq!(parse_hex_or_decimal_u64("0xff"), Some(255));
+/// assert_eq!(parse_hex_or_decimal_u64("100"), Some(100)); // decimal
+/// assert_eq!(parse_hex_or_decimal_u64("ff"), Some(255));  // hex fallback
+/// ```
+#[must_use]
+pub fn parse_hex_or_decimal_u64(s: &str) -> Option<u64> {
+    if let Some(hex_str) = s.strip_prefix("0x") {
+        u64::from_str_radix(hex_str, 16).ok()
+    } else {
+        // Try decimal first, then hex fallback
+        s.parse::<u64>().ok().or_else(|| u64::from_str_radix(s, 16).ok())
+    }
+}
+
+/// Parses hex or decimal string to `u32`.
+///
+/// Handles "0x" prefix for hex. For unprefixed strings, tries decimal parsing first,
+/// then falls back to hex. Returns `None` if invalid or overflow.
+#[must_use]
+pub fn parse_hex_or_decimal_u32(s: &str) -> Option<u32> {
+    if let Some(hex_str) = s.strip_prefix("0x") {
+        u32::from_str_radix(hex_str, 16).ok()
+    } else {
+        // Try decimal first, then hex fallback
+        s.parse::<u32>().ok().or_else(|| u32::from_str_radix(s, 16).ok())
+    }
+}
+
+/// Parses variable-length hex string to a 32-byte big-endian array (uint256).
+///
+/// Handles values like "0x0", "0xb59b9f7800", or full 32-byte hashes.
+/// The result is left-padded with zeros (big-endian format).
+///
+/// Returns `None` if the hex string is empty, longer than 64 characters, or contains invalid hex.
+#[must_use]
+pub fn hex_to_u256(hex: &str) -> Option<[u8; 32]> {
+    let hex_str = hex.strip_prefix("0x").unwrap_or(hex);
+
+    // Handle empty or too long values
+    if hex_str.is_empty() || hex_str.len() > 64 {
+        return None;
+    }
+
+    HEX_BUFFER.with(|buffer| {
+        let mut buf = buffer.borrow_mut();
+        buf.clear();
+
+        // Pad odd-length hex strings with leading zero
+        if hex_str.len() % 2 == 1 {
+            buf.push('0');
+        }
+        buf.push_str(hex_str);
+
+        let bytes = hex::decode(&*buf).ok()?;
+
+        // Left-pad to 32 bytes (big-endian)
+        let mut result = [0u8; 32];
+        let start = 32 - bytes.len();
+        result[start..].copy_from_slice(&bytes);
+
+        Some(result)
+    })
 }
 
 #[cfg(test)]

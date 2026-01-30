@@ -3,100 +3,13 @@ use crate::{
         BlockBody, BlockHeader, LogFilter, LogId, LogRecord, ReceiptRecord, TransactionRecord,
     },
     utils::hex_buffer::{
-        format_address, format_hash32, format_hex, format_hex_large, format_hex_u64, HexSerializer,
+        format_address, format_hash32, format_hex, format_hex_large, format_hex_u64,
+        hex_to_u256, parse_hex_array, parse_hex_bytes, parse_hex_or_decimal_u32,
+        parse_hex_or_decimal_u64, HexSerializer,
     },
 };
 use serde_json::Value;
 use std::sync::Arc;
-
-// --- Hex Utilities ---
-
-/// Decodes hex string to bytes, stripping optional "0x" prefix.
-/// Returns `None` for invalid hex or odd-length strings.
-#[must_use]
-pub fn hex_to_bytes(hex: &str) -> Option<Vec<u8>> {
-    hex::decode(hex.strip_prefix("0x").unwrap_or(hex)).ok()
-}
-
-/// Decodes hex string to a fixed-size byte array (e.g., addresses, hashes).
-/// Returns `None` if length doesn't match `N*2` or contains invalid hex.
-#[must_use]
-pub fn hex_to_array<const N: usize>(hex: &str) -> Option<[u8; N]> {
-    let hex_str = hex.strip_prefix("0x").unwrap_or(hex);
-    if hex_str.len() != N * 2 {
-        return None;
-    }
-
-    let mut array = [0u8; N];
-    for (i, chunk) in hex_str.as_bytes().chunks(2).enumerate() {
-        let high = hex_digit_to_u8(chunk[0])?;
-        let low = hex_digit_to_u8(chunk[1])?;
-        array[i] = (high << 4) | low;
-    }
-
-    Some(array)
-}
-
-fn hex_digit_to_u8(c: u8) -> Option<u8> {
-    match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        b'A'..=b'F' => Some(c - b'A' + 10),
-        _ => None,
-    }
-}
-
-/// Parses hex or decimal string to u64. Handles "0x" prefix.
-/// For unprefixed strings, tries decimal first then hex fallback.
-#[must_use]
-pub fn hex_to_u64(s: &str) -> Option<u64> {
-    if let Some(hex_str) = s.strip_prefix("0x") {
-        u64::from_str_radix(hex_str, 16).ok()
-    } else {
-        s.parse::<u64>().ok().or_else(|| u64::from_str_radix(s, 16).ok())
-    }
-}
-
-/// Parses hex or decimal string to u32. Handles "0x" prefix.
-/// For unprefixed strings, tries decimal first then hex fallback.
-#[must_use]
-pub fn hex_to_u32(s: &str) -> Option<u32> {
-    if let Some(hex_str) = s.strip_prefix("0x") {
-        u32::from_str_radix(hex_str, 16).ok()
-    } else {
-        s.parse::<u32>().ok().or_else(|| u32::from_str_radix(s, 16).ok())
-    }
-}
-
-/// Parses variable-length hex string to a 32-byte big-endian array (uint256).
-/// Handles values like "0x0", "0xb59b9f7800", or full 32-byte hashes.
-/// The result is left-padded with zeros (big-endian format).
-#[must_use]
-pub fn hex_to_u256(hex: &str) -> Option<[u8; 32]> {
-    let hex_str = hex.strip_prefix("0x").unwrap_or(hex);
-
-    // Handle empty or too long values
-    if hex_str.is_empty() || hex_str.len() > 64 {
-        return None;
-    }
-
-    // Decode hex bytes
-    // Pad odd-length hex strings with leading zero
-    let padded_hex = if hex_str.len() % 2 == 1 {
-        format!("0{hex_str}")
-    } else {
-        hex_str.to_string()
-    };
-
-    let bytes = hex::decode(&padded_hex).ok()?;
-
-    // Left-pad to 32 bytes (big-endian)
-    let mut result = [0u8; 32];
-    let start = 32 - bytes.len();
-    result[start..].copy_from_slice(&bytes);
-
-    Some(result)
-}
 
 // --- Log Conversions ---
 
@@ -104,8 +17,8 @@ pub fn hex_to_u256(hex: &str) -> Option<[u8; 32]> {
 /// Returns `None` if required fields are missing or malformed.
 #[must_use]
 pub fn json_log_to_log_id(log: &Value) -> Option<LogId> {
-    let block_number = hex_to_u64(log.get("blockNumber")?.as_str()?)?;
-    let log_index = hex_to_u32(log.get("logIndex")?.as_str()?)?;
+    let block_number = parse_hex_or_decimal_u64(log.get("blockNumber")?.as_str()?)?;
+    let log_index = parse_hex_or_decimal_u32(log.get("logIndex")?.as_str()?)?;
     Some(LogId::new(block_number, log_index))
 }
 
@@ -113,24 +26,24 @@ pub fn json_log_to_log_id(log: &Value) -> Option<LogId> {
 /// Topics are limited to 4 entries per Ethereum spec. Returns `None` if malformed.
 #[must_use]
 pub fn json_log_to_log_record(log: &Value) -> Option<(LogId, LogRecord)> {
-    let block_number = hex_to_u64(log.get("blockNumber")?.as_str()?)?;
-    let log_index = hex_to_u32(log.get("logIndex")?.as_str()?)?;
+    let block_number = parse_hex_or_decimal_u64(log.get("blockNumber")?.as_str()?)?;
+    let log_index = parse_hex_or_decimal_u32(log.get("logIndex")?.as_str()?)?;
     let log_id = LogId::new(block_number, log_index);
 
-    let address = hex_to_array::<20>(log.get("address")?.as_str()?)?;
+    let address = parse_hex_array::<20>(log.get("address")?.as_str()?)?;
 
     let topics = log.get("topics")?.as_array()?;
     let mut topic_array = [None; 4];
     for (i, topic) in topics.iter().take(4).enumerate() {
         if let Some(topic_str) = topic.as_str() {
-            topic_array[i] = hex_to_array::<32>(topic_str);
+            topic_array[i] = parse_hex_array::<32>(topic_str);
         }
     }
 
-    let data = hex_to_bytes(log.get("data")?.as_str()?)?;
-    let transaction_hash = hex_to_array::<32>(log.get("transactionHash")?.as_str()?)?;
-    let block_hash = hex_to_array::<32>(log.get("blockHash")?.as_str()?)?;
-    let transaction_index = hex_to_u32(log.get("transactionIndex")?.as_str()?)?;
+    let data = parse_hex_bytes(log.get("data")?.as_str()?)?;
+    let transaction_hash = parse_hex_array::<32>(log.get("transactionHash")?.as_str()?)?;
+    let block_hash = parse_hex_array::<32>(log.get("blockHash")?.as_str()?)?;
+    let transaction_index = parse_hex_or_decimal_u32(log.get("transactionIndex")?.as_str()?)?;
     let removed = log.get("removed").and_then(Value::as_bool).unwrap_or(false);
 
     Some((
@@ -176,18 +89,18 @@ pub fn log_record_to_json_log(log_id: &LogId, log_record: &LogRecord) -> Value {
 /// Returns `None` if required fields are missing or malformed.
 #[must_use]
 pub fn json_block_to_block_header(block: &Value) -> Option<BlockHeader> {
-    let hash = hex_to_array::<32>(block.get("hash")?.as_str()?)?;
-    let number = hex_to_u64(block.get("number")?.as_str()?)?;
-    let parent_hash = hex_to_array::<32>(block.get("parentHash")?.as_str()?)?;
-    let timestamp = hex_to_u64(block.get("timestamp")?.as_str()?)?;
-    let gas_limit = hex_to_u64(block.get("gasLimit")?.as_str()?)?;
-    let gas_used = hex_to_u64(block.get("gasUsed")?.as_str()?)?;
-    let miner = hex_to_array::<20>(block.get("miner")?.as_str()?)?;
-    let extra_data = hex_to_bytes(block.get("extraData")?.as_str()?)?;
-    let logs_bloom = hex_to_bytes(block.get("logsBloom")?.as_str()?)?;
-    let transactions_root = hex_to_array::<32>(block.get("transactionsRoot")?.as_str()?)?;
-    let state_root = hex_to_array::<32>(block.get("stateRoot")?.as_str()?)?;
-    let receipts_root = hex_to_array::<32>(block.get("receiptsRoot")?.as_str()?)?;
+    let hash = parse_hex_array::<32>(block.get("hash")?.as_str()?)?;
+    let number = parse_hex_or_decimal_u64(block.get("number")?.as_str()?)?;
+    let parent_hash = parse_hex_array::<32>(block.get("parentHash")?.as_str()?)?;
+    let timestamp = parse_hex_or_decimal_u64(block.get("timestamp")?.as_str()?)?;
+    let gas_limit = parse_hex_or_decimal_u64(block.get("gasLimit")?.as_str()?)?;
+    let gas_used = parse_hex_or_decimal_u64(block.get("gasUsed")?.as_str()?)?;
+    let miner = parse_hex_array::<20>(block.get("miner")?.as_str()?)?;
+    let extra_data = parse_hex_bytes(block.get("extraData")?.as_str()?)?;
+    let logs_bloom = parse_hex_bytes(block.get("logsBloom")?.as_str()?)?;
+    let transactions_root = parse_hex_array::<32>(block.get("transactionsRoot")?.as_str()?)?;
+    let state_root = parse_hex_array::<32>(block.get("stateRoot")?.as_str()?)?;
+    let receipts_root = parse_hex_array::<32>(block.get("receiptsRoot")?.as_str()?)?;
 
     Some(BlockHeader {
         hash,
@@ -211,7 +124,7 @@ pub fn json_block_to_block_header(block: &Value) -> Option<BlockHeader> {
 /// - Full transaction objects (when `fullTransactions=true`) - extracts hash from each object
 #[must_use]
 pub fn json_block_to_block_body(block: &Value) -> Option<BlockBody> {
-    let hash = hex_to_array::<32>(block.get("hash")?.as_str()?)?;
+    let hash = parse_hex_array::<32>(block.get("hash")?.as_str()?)?;
     let transactions = block.get("transactions")?.as_array()?;
     let tx_hashes: Vec<_> = transactions
         .iter()
@@ -219,10 +132,10 @@ pub fn json_block_to_block_body(block: &Value) -> Option<BlockBody> {
             // Handle both formats: hash string or full transaction object
             if let Some(hash_str) = tx.as_str() {
                 // Transaction is a string (hash only) - fullTransactions=false
-                hex_to_array::<32>(hash_str)
+                parse_hex_array::<32>(hash_str)
             } else if let Some(tx_obj) = tx.as_object() {
                 // Transaction is an object (full tx) - fullTransactions=true
-                tx_obj.get("hash").and_then(|h| h.as_str()).and_then(hex_to_array::<32>)
+                tx_obj.get("hash").and_then(|h| h.as_str()).and_then(parse_hex_array::<32>)
             } else {
                 None
             }
@@ -337,24 +250,24 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
 
     let hash = require_field!(
         "hash",
-        tx.get("hash").and_then(|v| v.as_str()).and_then(hex_to_array::<32>)
+        tx.get("hash").and_then(|v| v.as_str()).and_then(parse_hex_array::<32>)
     );
-    let block_hash = tx.get("blockHash").and_then(|v| v.as_str()).and_then(hex_to_array::<32>);
-    let block_number = tx.get("blockNumber").and_then(|v| v.as_str()).and_then(hex_to_u64);
+    let block_hash = tx.get("blockHash").and_then(|v| v.as_str()).and_then(parse_hex_array::<32>);
+    let block_number = tx.get("blockNumber").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64);
     let transaction_index =
-        tx.get("transactionIndex").and_then(|v| v.as_str()).and_then(hex_to_u32);
+        tx.get("transactionIndex").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u32);
     let from = require_field!(
         "from",
-        tx.get("from").and_then(|v| v.as_str()).and_then(hex_to_array::<20>)
+        tx.get("from").and_then(|v| v.as_str()).and_then(parse_hex_array::<20>)
     );
-    let to = tx.get("to").and_then(|v| v.as_str()).and_then(hex_to_array::<20>);
+    let to = tx.get("to").and_then(|v| v.as_str()).and_then(parse_hex_array::<20>);
     // Value is variable-length hex (e.g., "0x0", "0xb59b9f7800"), needs padding to 32 bytes
     let value =
         require_field!("value", tx.get("value").and_then(|v| v.as_str()).and_then(hex_to_u256));
 
     // EIP-2718 tx types (0-255): 0=Legacy, 1=EIP-2930, 2=EIP-1559, 3=EIP-4844
     #[allow(clippy::cast_possible_truncation)]
-    let tx_type = tx.get("type").and_then(|v| v.as_str()).and_then(hex_to_u64).and_then(|v| {
+    let tx_type = tx.get("type").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64).and_then(|v| {
         if v <= 255 {
             Some(v as u8)
         } else {
@@ -372,14 +285,14 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
         tx.get("maxFeePerBlobGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
 
     let gas_limit =
-        require_field!("gas", tx.get("gas").and_then(|v| v.as_str()).and_then(hex_to_u64));
+        require_field!("gas", tx.get("gas").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64));
     let nonce =
-        require_field!("nonce", tx.get("nonce").and_then(|v| v.as_str()).and_then(hex_to_u64));
+        require_field!("nonce", tx.get("nonce").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64));
     let data =
-        require_field!("input", tx.get("input").and_then(|v| v.as_str()).and_then(hex_to_bytes));
+        require_field!("input", tx.get("input").and_then(|v| v.as_str()).and_then(parse_hex_bytes));
 
     // v is u64: can be large for EIP-155 legacy transactions (chainId * 2 + 35/36)
-    let v = require_field!("v", tx.get("v").and_then(|v| v.as_str()).and_then(hex_to_u64));
+    let v = require_field!("v", tx.get("v").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64));
 
     // r and s are ECDSA signature components - can be <32 bytes if they have leading zeros
     let r = require_field!("r", tx.get("r").and_then(|v| v.as_str()).and_then(hex_to_u256));
@@ -497,33 +410,33 @@ pub fn transaction_record_to_json(transaction: &TransactionRecord) -> Value {
 /// Converts JSON-RPC receipt to internal format.
 /// Stores log ID references (not full log data) since logs are cached separately.
 pub fn json_receipt_to_receipt_record(receipt: &Value) -> Option<ReceiptRecord> {
-    let transaction_hash = hex_to_array::<32>(receipt.get("transactionHash")?.as_str()?)?;
-    let block_hash = hex_to_array::<32>(receipt.get("blockHash")?.as_str()?)?;
-    let block_number = hex_to_u64(receipt.get("blockNumber")?.as_str()?)?;
-    let transaction_index = hex_to_u32(receipt.get("transactionIndex")?.as_str()?)?;
-    let from = hex_to_array::<20>(receipt.get("from")?.as_str()?)?;
-    let to = receipt.get("to").and_then(|v| v.as_str()).and_then(hex_to_array::<20>);
-    let cumulative_gas_used = hex_to_u64(receipt.get("cumulativeGasUsed")?.as_str()?)?;
-    let gas_used = hex_to_u64(receipt.get("gasUsed")?.as_str()?)?;
+    let transaction_hash = parse_hex_array::<32>(receipt.get("transactionHash")?.as_str()?)?;
+    let block_hash = parse_hex_array::<32>(receipt.get("blockHash")?.as_str()?)?;
+    let block_number = parse_hex_or_decimal_u64(receipt.get("blockNumber")?.as_str()?)?;
+    let transaction_index = parse_hex_or_decimal_u32(receipt.get("transactionIndex")?.as_str()?)?;
+    let from = parse_hex_array::<20>(receipt.get("from")?.as_str()?)?;
+    let to = receipt.get("to").and_then(|v| v.as_str()).and_then(parse_hex_array::<20>);
+    let cumulative_gas_used = parse_hex_or_decimal_u64(receipt.get("cumulativeGasUsed")?.as_str()?)?;
+    let gas_used = parse_hex_or_decimal_u64(receipt.get("gasUsed")?.as_str()?)?;
     let contract_address = receipt
         .get("contractAddress")
         .and_then(|v| v.as_str())
-        .and_then(hex_to_array::<20>);
+        .and_then(parse_hex_array::<20>);
 
     let log_ids: Vec<_> =
         receipt.get("logs")?.as_array()?.iter().filter_map(json_log_to_log_id).collect();
 
-    let status = hex_to_u64(receipt.get("status")?.as_str()?)?;
-    let logs_bloom = hex_to_bytes(receipt.get("logsBloom")?.as_str()?)?;
+    let status = parse_hex_or_decimal_u64(receipt.get("status")?.as_str()?)?;
+    let logs_bloom = parse_hex_bytes(receipt.get("logsBloom")?.as_str()?)?;
 
     // Optional EIP-1559/4844 fields
     let effective_gas_price =
-        receipt.get("effectiveGasPrice").and_then(|v| v.as_str()).and_then(hex_to_u64);
-    let blob_gas_price = receipt.get("blobGasPrice").and_then(|v| v.as_str()).and_then(hex_to_u64);
+        receipt.get("effectiveGasPrice").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64);
+    let blob_gas_price = receipt.get("blobGasPrice").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64);
 
     // EIP-2718 tx types (0-255): 0=Legacy, 1=EIP-2930, 2=EIP-1559, 3=EIP-4844
     #[allow(clippy::cast_possible_truncation)]
-    let tx_type = receipt.get("type").and_then(|v| v.as_str()).and_then(hex_to_u64).and_then(|v| {
+    let tx_type = receipt.get("type").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64).and_then(|v| {
         if v <= 255 {
             Some(v as u8)
         } else {
@@ -643,13 +556,13 @@ pub fn receipt_record_to_json(receipt: &ReceiptRecord, logs: &[Arc<LogRecord>]) 
 pub fn json_params_to_log_filter(params: &Value) -> Option<LogFilter> {
     let filter = params.as_array()?.first()?;
 
-    let from_block = hex_to_u64(filter.get("fromBlock")?.as_str()?)?;
-    let to_block = hex_to_u64(filter.get("toBlock")?.as_str()?)?;
+    let from_block = parse_hex_or_decimal_u64(filter.get("fromBlock")?.as_str()?)?;
+    let to_block = parse_hex_or_decimal_u64(filter.get("toBlock")?.as_str()?)?;
 
     let mut log_filter = LogFilter::new(from_block, to_block);
 
     if let Some(address) = filter.get("address").and_then(|v| v.as_str()) {
-        if let Some(addr_bytes) = hex_to_array::<20>(address) {
+        if let Some(addr_bytes) = parse_hex_array::<20>(address) {
             log_filter = log_filter.with_address(addr_bytes);
         }
     }
@@ -657,7 +570,7 @@ pub fn json_params_to_log_filter(params: &Value) -> Option<LogFilter> {
     if let Some(topics) = filter.get("topics").and_then(|v| v.as_array()) {
         for (i, topic) in topics.iter().take(4).enumerate() {
             if let Some(topic_str) = topic.as_str() {
-                if let Some(topic_bytes) = hex_to_array::<32>(topic_str) {
+                if let Some(topic_bytes) = parse_hex_array::<32>(topic_str) {
                     log_filter = log_filter.with_topic(i, topic_bytes);
                 }
             }
@@ -667,7 +580,7 @@ pub fn json_params_to_log_filter(params: &Value) -> Option<LogFilter> {
     if let Some(topics_anywhere) = filter.get("topicsAnywhere").and_then(|v| v.as_array()) {
         for topic in topics_anywhere {
             if let Some(topic_str) = topic.as_str() {
-                if let Some(topic_bytes) = hex_to_array::<32>(topic_str) {
+                if let Some(topic_bytes) = parse_hex_array::<32>(topic_str) {
                     log_filter = log_filter.with_topic_anywhere(topic_bytes);
                 }
             }
@@ -684,9 +597,9 @@ mod tests {
 
     #[test]
     fn test_hex_conversion() {
-        assert_eq!(hex_to_bytes("0x123456").expect("hex_to_bytes failed"), vec![0x12, 0x34, 0x56]);
-        assert_eq!(hex_to_bytes("123456").expect("hex_to_bytes failed"), vec![0x12, 0x34, 0x56]);
-        assert_eq!(hex_to_array::<3>("0x123456").expect("hex_to_array failed"), [0x12, 0x34, 0x56]);
+        assert_eq!(parse_hex_bytes("0x123456").expect("parse_hex_bytes failed"), vec![0x12, 0x34, 0x56]);
+        assert_eq!(parse_hex_bytes("123456").expect("parse_hex_bytes failed"), vec![0x12, 0x34, 0x56]);
+        assert_eq!(parse_hex_array::<3>("0x123456").expect("parse_hex_array failed"), [0x12, 0x34, 0x56]);
     }
 
     #[test]
@@ -824,8 +737,8 @@ mod tests {
         assert_eq!(orig_s, result_s, "s signature mismatch");
 
         // v value
-        let orig_v = hex_to_u64(original_json.get("v").unwrap().as_str().unwrap()).unwrap();
-        let result_v = hex_to_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
+        let orig_v = parse_hex_or_decimal_u64(original_json.get("v").unwrap().as_str().unwrap()).unwrap();
+        let result_v = parse_hex_or_decimal_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(orig_v, result_v, "v mismatch");
     }
 
@@ -858,7 +771,7 @@ mod tests {
 
         // Verify type
         assert_eq!(
-            hex_to_u64(result_json.get("type").unwrap().as_str().unwrap()).unwrap(),
+            parse_hex_or_decimal_u64(result_json.get("type").unwrap().as_str().unwrap()).unwrap(),
             2,
             "type should be 2 for EIP-1559"
         );
@@ -917,7 +830,7 @@ mod tests {
 
         let result_json = transaction_record_to_json(&record);
 
-        let result_v = hex_to_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
+        let result_v = parse_hex_or_decimal_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(result_v, 2709, "v roundtrip failed for high chainId");
     }
 
@@ -956,9 +869,9 @@ mod tests {
 
         // Verify input data preserved
         let orig_input =
-            hex_to_bytes(original_json.get("input").unwrap().as_str().unwrap()).unwrap();
+            parse_hex_bytes(original_json.get("input").unwrap().as_str().unwrap()).unwrap();
         let result_input =
-            hex_to_bytes(result_json.get("input").unwrap().as_str().unwrap()).unwrap();
+            parse_hex_bytes(result_json.get("input").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(orig_input, result_input, "input bytecode mismatch");
     }
 
@@ -1155,16 +1068,16 @@ mod tests {
 
     #[test]
     fn test_hex_buffer_parsing_functions() {
-        assert_eq!(hex_to_u64("0x3e8").unwrap(), 1000);
-        assert_eq!(hex_to_u64("3e8").unwrap(), 1000);
-        assert_eq!(hex_to_u32("0x0").unwrap(), 0);
-        assert_eq!(hex_to_u32("ff").unwrap(), 255);
+        assert_eq!(parse_hex_or_decimal_u64("0x3e8").unwrap(), 1000);
+        assert_eq!(parse_hex_or_decimal_u64("3e8").unwrap(), 1000);
+        assert_eq!(parse_hex_or_decimal_u32("0x0").unwrap(), 0);
+        assert_eq!(parse_hex_or_decimal_u32("ff").unwrap(), 255);
 
-        let address = hex_to_array::<20>("0x1234567890123456789012345678901234567890").unwrap();
+        let address = parse_hex_array::<20>("0x1234567890123456789012345678901234567890").unwrap();
         assert_eq!(address[0], 0x12);
         assert_eq!(address[19], 0x90);
 
-        let bytes = hex_to_bytes("0x123456").unwrap();
+        let bytes = parse_hex_bytes("0x123456").unwrap();
         assert_eq!(bytes, vec![0x12, 0x34, 0x56]);
     }
 
@@ -1172,60 +1085,60 @@ mod tests {
     fn test_hex_buffer_roundtrip() {
         let original_hash = [0xAB; 32];
         let formatted = format_hash32(&original_hash);
-        let parsed = hex_to_array::<32>(&formatted).unwrap();
+        let parsed = parse_hex_array::<32>(&formatted).unwrap();
         assert_eq!(original_hash, parsed);
 
         let original_address = [0xCD; 20];
         let formatted = format_address(&original_address);
-        let parsed = hex_to_array::<20>(&formatted).unwrap();
+        let parsed = parse_hex_array::<20>(&formatted).unwrap();
         assert_eq!(original_address, parsed);
 
         let original_number = 12345u64;
         let formatted = format_hex_u64(original_number);
-        let parsed = hex_to_u64(&formatted).unwrap();
+        let parsed = parse_hex_or_decimal_u64(&formatted).unwrap();
         assert_eq!(original_number, parsed);
     }
 
     #[test]
-    fn test_hex_to_array_wrong_length() {
+    fn test_parse_hex_array_wrong_length() {
         // Too short (line 31-32 early return)
-        assert!(hex_to_array::<32>("0x1234").is_none());
-        assert!(hex_to_array::<20>("0x12").is_none());
+        assert!(parse_hex_array::<32>("0x1234").is_none());
+        assert!(parse_hex_array::<20>("0x12").is_none());
 
         // Too long
-        assert!(hex_to_array::<3>("0x12345678").is_none());
+        assert!(parse_hex_array::<3>("0x12345678").is_none());
     }
 
     #[test]
-    fn test_hex_to_array_invalid_chars() {
+    fn test_parse_hex_array_invalid_chars() {
         // Invalid hex characters (line 54: _ => None)
-        assert!(hex_to_array::<3>("0xGGGGGG").is_none());
-        assert!(hex_to_array::<3>("0x12ZZZZ").is_none());
-        assert!(hex_to_array::<3>("0x!@#$%^").is_none());
+        assert!(parse_hex_array::<3>("0xGGGGGG").is_none());
+        assert!(parse_hex_array::<3>("0x12ZZZZ").is_none());
+        assert!(parse_hex_array::<3>("0x!@#$%^").is_none());
 
         // Space characters
-        assert!(hex_to_array::<3>("0x12 456").is_none());
+        assert!(parse_hex_array::<3>("0x12 456").is_none());
     }
 
     #[test]
-    fn test_hex_to_array_uppercase() {
+    fn test_parse_hex_array_uppercase() {
         // Test uppercase hex digits (line 53: 'A'..='F')
-        let result = hex_to_array::<3>("0xABCDEF");
+        let result = parse_hex_array::<3>("0xABCDEF");
         assert!(result.is_some());
         assert_eq!(result.unwrap(), [0xAB, 0xCD, 0xEF]);
 
         // Mixed case
-        let result = hex_to_array::<3>("0xAbCdEf");
+        let result = parse_hex_array::<3>("0xAbCdEf");
         assert!(result.is_some());
         assert_eq!(result.unwrap(), [0xAB, 0xCD, 0xEF]);
     }
 
     #[test]
     fn test_hex_digit_to_u8_all_cases() {
-        // Test all valid hex digits through hex_to_array
+        // Test all valid hex digits through parse_hex_array
         // "0123456789abcdefABCDEF0000" = 26 hex chars = 13 bytes
         let all_hex = "0x0123456789abcdefABCDEF0000";
-        let result = hex_to_array::<13>(all_hex);
+        let result = parse_hex_array::<13>(all_hex);
         assert!(result.is_some());
         let bytes = result.unwrap();
         assert_eq!(bytes[0], 0x01);

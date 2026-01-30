@@ -296,31 +296,3 @@ async fn test_chain_state_reorg_foundation() {
     assert_eq!(hash, hash_c, "Hash should be the new reorg hash");
 }
 
-/// Tests that cache invalidation range calculation is correct during reorgs.
-///
-/// The key invariant is: when a reorg is detected at block N with old tip at M,
-/// all blocks from N to M (inclusive) must be invalidated.
-#[tokio::test]
-async fn test_cache_invalidation_range_calculation() {
-    let chain_state = Arc::new(ChainState::new());
-    let config = CacheManagerConfig::default();
-    let cache_manager =
-        Arc::new(CacheManager::new(&config, chain_state.clone()).expect("valid test cache config"));
-
-    // Set initial tip to block 1005
-    let _ = chain_state.update_tip(1005, [0x55; 32]).await;
-
-    // Simulate reorg detected at block 1000
-    // The cache manager should invalidate blocks 1000..=1005
-
-    // Use perform_cleanup to trigger cache management
-    cache_manager.perform_cleanup().await;
-
-    // The key assertion is that after a reorg is processed,
-    // the invalidation range includes the reorg point AND all blocks after it
-    // This is tested implicitly by the reorg_manager regression tests in prism-core
-
-    // Verify the cache manager accepts the chain state
-    let tip = chain_state.current_tip();
-    assert_eq!(tip, 1005, "Chain state should maintain tip");
-}

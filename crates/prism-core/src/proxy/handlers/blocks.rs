@@ -5,7 +5,7 @@ use crate::{
     cache::converter::block_header_and_body_to_json,
     proxy::engine::SharedContext,
     types::{CacheStatus, JsonRpcRequest, JsonRpcResponse, JSONRPC_VERSION_COW},
-    utils::BlockParameter,
+    utils::{block_param::BlockTag, BlockParameter},
 };
 
 use super::super::errors::ProxyError;
@@ -37,8 +37,6 @@ impl BlocksHandler {
         &self,
         request: JsonRpcRequest,
     ) -> Result<JsonRpcResponse, ProxyError> {
-        const SPECIAL_TAGS: &[&str] = &["latest", "earliest", "pending", "safe", "finalized"];
-
         let params = request.params.as_ref().ok_or_else(|| {
             ProxyError::InvalidRequest("Missing parameters for eth_getBlockByNumber".into())
         })?;
@@ -49,7 +47,7 @@ impl BlocksHandler {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ProxyError::InvalidRequest("Invalid block parameter".into()))?;
 
-        if SPECIAL_TAGS.contains(&block_param) {
+        if BlockTag::is_tag(block_param) {
             debug!(block_tag = block_param, "forwarding special block tag to upstream");
             return self.ctx.forward_to_upstream(&request).await;
         }
@@ -297,11 +295,13 @@ mod tests {
     /// Test special tag constants
     #[test]
     fn test_special_tags_constant() {
-        const SPECIAL_TAGS: &[&str] = &["latest", "earliest", "pending", "safe", "finalized"];
-        assert_eq!(SPECIAL_TAGS.len(), 5, "Should have 5 special tags");
-        assert!(SPECIAL_TAGS.contains(&"latest"));
-        assert!(SPECIAL_TAGS.contains(&"finalized"));
-        assert!(!SPECIAL_TAGS.contains(&"invalid"));
+        assert_eq!(BlockTag::ALL.len(), 5, "Should have 5 special tags");
+        assert!(BlockTag::ALL.contains(&"latest"));
+        assert!(BlockTag::ALL.contains(&"finalized"));
+        assert!(!BlockTag::ALL.contains(&"invalid"));
+        assert!(BlockTag::is_tag("latest"));
+        assert!(BlockTag::is_tag("finalized"));
+        assert!(!BlockTag::is_tag("invalid"));
     }
 
     /// Test block response assembly (conceptual test)

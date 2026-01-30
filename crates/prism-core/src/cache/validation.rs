@@ -2,9 +2,9 @@
 //!
 //! Protects against malicious or buggy upstreams by validating data before caching.
 
-use crate::cache::{
-    converter::{hex_to_array, hex_to_u64},
-    types::LogFilter,
+use crate::{
+    cache::types::LogFilter,
+    utils::hex_buffer::{parse_hex_array, parse_hex_or_decimal_u64},
 };
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -16,7 +16,7 @@ pub fn validate_block_response(block_json: &Value) -> bool {
         return false;
     };
 
-    if hex_to_array::<32>(hash_str).is_none() {
+    if parse_hex_array::<32>(hash_str).is_none() {
         warn!(hash = hash_str, "block validation failed: invalid hash format");
         return false;
     }
@@ -37,7 +37,7 @@ pub fn validate_block_response(block_json: &Value) -> bool {
 pub fn validate_logs_response(logs_array: &[Value], filter: &LogFilter) -> bool {
     for (idx, log) in logs_array.iter().enumerate() {
         let Some(block_number) =
-            log.get("blockNumber").and_then(|v| v.as_str()).and_then(hex_to_u64)
+            log.get("blockNumber").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64)
         else {
             warn!(log_index = idx, "log validation failed: missing or invalid blockNumber");
             return false;
@@ -81,7 +81,7 @@ pub fn validate_receipt_response(receipt_json: &Value, expected_tx_hash: &[u8; 3
         return false;
     };
 
-    let Some(tx_hash) = hex_to_array::<32>(tx_hash_str) else {
+    let Some(tx_hash) = parse_hex_array::<32>(tx_hash_str) else {
         warn!(hash = tx_hash_str, "receipt validation failed: invalid hash format");
         return false;
     };
@@ -98,7 +98,7 @@ pub fn validate_receipt_response(receipt_json: &Value, expected_tx_hash: &[u8; 3
     if receipt_json
         .get("blockNumber")
         .and_then(|v| v.as_str())
-        .and_then(hex_to_u64)
+        .and_then(parse_hex_or_decimal_u64)
         .is_none()
     {
         warn!("receipt validation failed: missing or invalid blockNumber");

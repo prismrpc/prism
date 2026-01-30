@@ -208,7 +208,7 @@ async fn test_execute_consensus_insufficient_upstreams_return_error_behavior() {
 
 #[tokio::test]
 #[allow(clippy::too_many_lines)]
-async fn test_consensus_all_upstreams_agree() {
+async fn test_consensus_majority_agreement_with_byzantine_minority() {
     let mut correct_server_1 = mockito::Server::new_async().await;
     let _mock1 = correct_server_1
         .mock("POST", "/")
@@ -1382,8 +1382,8 @@ async fn test_consensus_quorum_requirements_for_partial_responses() {
 }
 
 #[tokio::test]
-async fn test_consensus_dispute_behaviors() {
-    // Test all dispute behavior variants
+async fn test_consensus_dispute_behavior_variant_construction() {
+    // Smoke test: verify all dispute behavior variants can be constructed
     let behaviors = vec![
         DisputeBehavior::PreferBlockHeadLeader,
         DisputeBehavior::ReturnError,
@@ -1404,7 +1404,8 @@ async fn test_consensus_dispute_behaviors() {
 }
 
 #[tokio::test]
-async fn test_consensus_failure_behaviors() {
+async fn test_consensus_failure_behavior_variant_construction() {
+    // Smoke test: verify all failure behavior variants can be constructed
     let behaviors = vec![
         FailureBehavior::ReturnError,
         FailureBehavior::AcceptAnyValid,
@@ -1424,7 +1425,8 @@ async fn test_consensus_failure_behaviors() {
 }
 
 #[tokio::test]
-async fn test_consensus_low_participants_behaviors() {
+async fn test_consensus_low_participants_behavior_variant_construction() {
+    // Smoke test: verify all low participants behavior variants can be constructed
     let behaviors = vec![
         LowParticipantsBehavior::OnlyBlockHeadLeader,
         LowParticipantsBehavior::ReturnError,

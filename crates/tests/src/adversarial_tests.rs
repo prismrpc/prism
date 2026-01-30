@@ -248,18 +248,18 @@ async fn test_consensus_50_50_split_returns_error_when_configured() {
     let request = Arc::new(create_test_request("eth_getBlockByNumber"));
     let result = engine.execute_consensus(request, upstreams, &scoring_engine).await;
 
-    // When configured for ReturnError with min_count=3 and max agreement=2,
-    // the system should not achieve consensus
-    // Behavioral check: system handles this case (either error or fallback)
-    // The exact behavior depends on failure_behavior configuration
-    if let Ok(consensus_result) = result {
-        // If it succeeded, it should indicate consensus wasn't achieved
-        assert!(
-            !consensus_result.consensus_achieved || consensus_result.agreement_count < 3,
-            "With 50/50 split, full consensus should not be achieved"
-        );
-    }
-    // Error is also acceptable - means ReturnError behavior worked
+    // With failure_behavior=ReturnError and min_count=3, but only 2 agreeing in each group,
+    // consensus cannot be achieved. The system returns Ok but with consensus_achieved=false
+    assert!(result.is_ok(), "Should return Ok even when consensus fails");
+    let consensus_result = result.unwrap();
+    assert!(
+        !consensus_result.consensus_achieved,
+        "Consensus should not be achieved with 50/50 split and min_count=3"
+    );
+    assert!(
+        consensus_result.agreement_count < 3,
+        "Agreement count should be less than min_count"
+    );
 }
 
 #[tokio::test]
@@ -479,55 +479,6 @@ async fn test_cache_thundering_herd_prevention() {
         NUM_CONCURRENT_REQUESTS,
         "All requests should be accounted for"
     );
-}
-
-#[tokio::test]
-async fn test_log_query_spanning_finalized_boundary() {
-    use prism_core::{
-        cache::{
-            cache_manager::CacheManager, log_cache::LogCacheConfig, manager::CacheManagerConfig,
-        },
-        chain::ChainState,
-    };
-
-    // Setup chain state with finalized_block = 100
-    // NOTE: tip must be updated BEFORE finalized, since update_finalized
-    // requires block <= current_tip
-    let chain_state = Arc::new(ChainState::new());
-    chain_state.update_tip(105, [105u8; 32]).await;
-    chain_state.update_finalized(100).await;
-
-    let config = CacheManagerConfig {
-        log_cache: LogCacheConfig {
-            chunk_size: 100,
-            safety_depth: 5, // Blocks within 5 of tip are "unsafe"
-            ..LogCacheConfig::default()
-        },
-        ..CacheManagerConfig::default()
-    };
-
-    let _cache_manager =
-        Arc::new(CacheManager::new(&config, chain_state.clone()).expect("valid test cache config"));
-
-    // The key behavioral check is that the cache manager respects finality
-    // when caching logs. We can't directly query logs here without more setup,
-    // but we can verify the chain state tracking is correct.
-
-    let current_tip = chain_state.current_tip();
-    let finalized = chain_state.finalized_block();
-
-    // Behavioral assertions:
-    // 1. Finalized block should be correctly tracked
-    assert_eq!(finalized, 100, "Finalized block should be 100");
-
-    // 2. Current tip should be higher than finalized
-    assert_eq!(current_tip, 105, "Current tip should be 105");
-
-    // 3. Safety depth calculation: blocks > (tip - safety_depth) are "unsafe"
-    // With tip=105 and safety_depth=5, blocks > 100 are unsafe
-    // This matches our finalized_block=100, which is correct
-    let unsafe_threshold = current_tip.saturating_sub(config.log_cache.safety_depth);
-    assert_eq!(unsafe_threshold, 100, "Unsafe threshold should match finalized block");
 }
 
 #[tokio::test]

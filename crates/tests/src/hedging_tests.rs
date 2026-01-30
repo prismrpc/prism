@@ -380,31 +380,18 @@ async fn test_hedging_extreme_latency_values() {
 }
 
 #[tokio::test]
-async fn test_hedging_resilience_to_failures() {
+async fn test_hedging_config_preserved_after_latency_recording() {
     let config = HedgeConfig { enabled: true, max_parallel: 3, ..HedgeConfig::default() };
 
     let executor = HedgeExecutor::new(config);
 
     for i in 0..10 {
-        executor.record_latency("resilience_test", i * 100);
+        executor.record_latency("config_test", i * 100);
     }
 
     let config_after = executor.get_config();
     assert!(config_after.enabled);
     assert_eq!(config_after.max_parallel, 3);
-}
-
-#[tokio::test]
-async fn test_hedging_boundary_conditions() {
-    let executor = HedgeExecutor::new(HedgeConfig::default());
-
-    executor.record_latency("boundary", 50);
-    executor.record_latency("boundary", 2000);
-    executor.record_latency("boundary", 1);
-    executor.record_latency("boundary", 10000);
-
-    let stats = executor.get_latency_stats("boundary");
-    assert!(stats.is_some());
 }
 
 #[tokio::test]
