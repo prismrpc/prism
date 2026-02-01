@@ -40,7 +40,8 @@ pub enum BlockTag {
 
 impl BlockTag {
     /// All standard Ethereum block tags.
-    pub const ALL: &'static [&'static str] = &["latest", "earliest", "pending", "safe", "finalized"];
+    pub const ALL: &'static [&'static str] =
+        &["latest", "earliest", "pending", "safe", "finalized"];
 
     /// Returns `true` if the given string is a valid block tag.
     #[must_use]

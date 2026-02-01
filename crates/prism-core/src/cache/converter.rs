@@ -3,9 +3,9 @@ use crate::{
         BlockBody, BlockHeader, LogFilter, LogId, LogRecord, ReceiptRecord, TransactionRecord,
     },
     utils::hex_buffer::{
-        format_address, format_hash32, format_hex, format_hex_large, format_hex_u64,
-        hex_to_u256, parse_hex_array, parse_hex_bytes, parse_hex_or_decimal_u32,
-        parse_hex_or_decimal_u64, HexSerializer,
+        format_address, format_hash32, format_hex, format_hex_large, format_hex_u64, hex_to_u256,
+        parse_hex_array, parse_hex_bytes, parse_hex_or_decimal_u32, parse_hex_or_decimal_u64,
+        HexSerializer,
     },
 };
 use serde_json::Value;
@@ -253,9 +253,14 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
         tx.get("hash").and_then(|v| v.as_str()).and_then(parse_hex_array::<32>)
     );
     let block_hash = tx.get("blockHash").and_then(|v| v.as_str()).and_then(parse_hex_array::<32>);
-    let block_number = tx.get("blockNumber").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64);
-    let transaction_index =
-        tx.get("transactionIndex").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u32);
+    let block_number = tx
+        .get("blockNumber")
+        .and_then(|v| v.as_str())
+        .and_then(parse_hex_or_decimal_u64);
+    let transaction_index = tx
+        .get("transactionIndex")
+        .and_then(|v| v.as_str())
+        .and_then(parse_hex_or_decimal_u32);
     let from = require_field!(
         "from",
         tx.get("from").and_then(|v| v.as_str()).and_then(parse_hex_array::<20>)
@@ -267,14 +272,18 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
 
     // EIP-2718 tx types (0-255): 0=Legacy, 1=EIP-2930, 2=EIP-1559, 3=EIP-4844
     #[allow(clippy::cast_possible_truncation)]
-    let tx_type = tx.get("type").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64).and_then(|v| {
-        if v <= 255 {
-            Some(v as u8)
-        } else {
-            tracing::warn!(tx_type = v, "Invalid transaction type exceeds u8 range");
-            None
-        }
-    });
+    let tx_type = tx
+        .get("type")
+        .and_then(|v| v.as_str())
+        .and_then(parse_hex_or_decimal_u64)
+        .and_then(|v| {
+            if v <= 255 {
+                Some(v as u8)
+            } else {
+                tracing::warn!(tx_type = v, "Invalid transaction type exceeds u8 range");
+                None
+            }
+        });
 
     // Parse gas pricing fields - all are variable-length hex values
     let gas_price = tx.get("gasPrice").and_then(|v| v.as_str()).and_then(hex_to_u256);
@@ -284,15 +293,22 @@ pub fn json_transaction_to_transaction_record(tx: &Value) -> Option<TransactionR
     let max_fee_per_blob_gas =
         tx.get("maxFeePerBlobGas").and_then(|v| v.as_str()).and_then(hex_to_u256);
 
-    let gas_limit =
-        require_field!("gas", tx.get("gas").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64));
-    let nonce =
-        require_field!("nonce", tx.get("nonce").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64));
+    let gas_limit = require_field!(
+        "gas",
+        tx.get("gas").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64)
+    );
+    let nonce = require_field!(
+        "nonce",
+        tx.get("nonce").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64)
+    );
     let data =
         require_field!("input", tx.get("input").and_then(|v| v.as_str()).and_then(parse_hex_bytes));
 
     // v is u64: can be large for EIP-155 legacy transactions (chainId * 2 + 35/36)
-    let v = require_field!("v", tx.get("v").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64));
+    let v = require_field!(
+        "v",
+        tx.get("v").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64)
+    );
 
     // r and s are ECDSA signature components - can be <32 bytes if they have leading zeros
     let r = require_field!("r", tx.get("r").and_then(|v| v.as_str()).and_then(hex_to_u256));
@@ -416,7 +432,8 @@ pub fn json_receipt_to_receipt_record(receipt: &Value) -> Option<ReceiptRecord> 
     let transaction_index = parse_hex_or_decimal_u32(receipt.get("transactionIndex")?.as_str()?)?;
     let from = parse_hex_array::<20>(receipt.get("from")?.as_str()?)?;
     let to = receipt.get("to").and_then(|v| v.as_str()).and_then(parse_hex_array::<20>);
-    let cumulative_gas_used = parse_hex_or_decimal_u64(receipt.get("cumulativeGasUsed")?.as_str()?)?;
+    let cumulative_gas_used =
+        parse_hex_or_decimal_u64(receipt.get("cumulativeGasUsed")?.as_str()?)?;
     let gas_used = parse_hex_or_decimal_u64(receipt.get("gasUsed")?.as_str()?)?;
     let contract_address = receipt
         .get("contractAddress")
@@ -430,20 +447,29 @@ pub fn json_receipt_to_receipt_record(receipt: &Value) -> Option<ReceiptRecord> 
     let logs_bloom = parse_hex_bytes(receipt.get("logsBloom")?.as_str()?)?;
 
     // Optional EIP-1559/4844 fields
-    let effective_gas_price =
-        receipt.get("effectiveGasPrice").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64);
-    let blob_gas_price = receipt.get("blobGasPrice").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64);
+    let effective_gas_price = receipt
+        .get("effectiveGasPrice")
+        .and_then(|v| v.as_str())
+        .and_then(parse_hex_or_decimal_u64);
+    let blob_gas_price = receipt
+        .get("blobGasPrice")
+        .and_then(|v| v.as_str())
+        .and_then(parse_hex_or_decimal_u64);
 
     // EIP-2718 tx types (0-255): 0=Legacy, 1=EIP-2930, 2=EIP-1559, 3=EIP-4844
     #[allow(clippy::cast_possible_truncation)]
-    let tx_type = receipt.get("type").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64).and_then(|v| {
-        if v <= 255 {
-            Some(v as u8)
-        } else {
-            tracing::warn!(tx_type = v, "Invalid transaction type exceeds u8 range");
-            None
-        }
-    });
+    let tx_type = receipt
+        .get("type")
+        .and_then(|v| v.as_str())
+        .and_then(parse_hex_or_decimal_u64)
+        .and_then(|v| {
+            if v <= 255 {
+                Some(v as u8)
+            } else {
+                tracing::warn!(tx_type = v, "Invalid transaction type exceeds u8 range");
+                None
+            }
+        });
 
     Some(ReceiptRecord {
         transaction_hash,
@@ -597,9 +623,18 @@ mod tests {
 
     #[test]
     fn test_hex_conversion() {
-        assert_eq!(parse_hex_bytes("0x123456").expect("parse_hex_bytes failed"), vec![0x12, 0x34, 0x56]);
-        assert_eq!(parse_hex_bytes("123456").expect("parse_hex_bytes failed"), vec![0x12, 0x34, 0x56]);
-        assert_eq!(parse_hex_array::<3>("0x123456").expect("parse_hex_array failed"), [0x12, 0x34, 0x56]);
+        assert_eq!(
+            parse_hex_bytes("0x123456").expect("parse_hex_bytes failed"),
+            vec![0x12, 0x34, 0x56]
+        );
+        assert_eq!(
+            parse_hex_bytes("123456").expect("parse_hex_bytes failed"),
+            vec![0x12, 0x34, 0x56]
+        );
+        assert_eq!(
+            parse_hex_array::<3>("0x123456").expect("parse_hex_array failed"),
+            [0x12, 0x34, 0x56]
+        );
     }
 
     #[test]
@@ -737,8 +772,10 @@ mod tests {
         assert_eq!(orig_s, result_s, "s signature mismatch");
 
         // v value
-        let orig_v = parse_hex_or_decimal_u64(original_json.get("v").unwrap().as_str().unwrap()).unwrap();
-        let result_v = parse_hex_or_decimal_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
+        let orig_v =
+            parse_hex_or_decimal_u64(original_json.get("v").unwrap().as_str().unwrap()).unwrap();
+        let result_v =
+            parse_hex_or_decimal_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(orig_v, result_v, "v mismatch");
     }
 
@@ -830,7 +867,8 @@ mod tests {
 
         let result_json = transaction_record_to_json(&record);
 
-        let result_v = parse_hex_or_decimal_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
+        let result_v =
+            parse_hex_or_decimal_u64(result_json.get("v").unwrap().as_str().unwrap()).unwrap();
         assert_eq!(result_v, 2709, "v roundtrip failed for high chainId");
     }
 

@@ -36,8 +36,10 @@ pub fn validate_block_response(block_json: &Value) -> bool {
 #[must_use]
 pub fn validate_logs_response(logs_array: &[Value], filter: &LogFilter) -> bool {
     for (idx, log) in logs_array.iter().enumerate() {
-        let Some(block_number) =
-            log.get("blockNumber").and_then(|v| v.as_str()).and_then(parse_hex_or_decimal_u64)
+        let Some(block_number) = log
+            .get("blockNumber")
+            .and_then(|v| v.as_str())
+            .and_then(parse_hex_or_decimal_u64)
         else {
             warn!(log_index = idx, "log validation failed: missing or invalid blockNumber");
             return false;

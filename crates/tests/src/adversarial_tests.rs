@@ -256,10 +256,7 @@ async fn test_consensus_50_50_split_returns_error_when_configured() {
         !consensus_result.consensus_achieved,
         "Consensus should not be achieved with 50/50 split and min_count=3"
     );
-    assert!(
-        consensus_result.agreement_count < 3,
-        "Agreement count should be less than min_count"
-    );
+    assert!(consensus_result.agreement_count < 3, "Agreement count should be less than min_count");
 }
 
 #[tokio::test]

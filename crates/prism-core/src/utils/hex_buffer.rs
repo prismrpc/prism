@@ -350,7 +350,7 @@ fn hex_digit_to_u8(c: u8) -> Option<u8> {
 /// # use prism_core::utils::hex_buffer::parse_hex_or_decimal_u64;
 /// assert_eq!(parse_hex_or_decimal_u64("0xff"), Some(255));
 /// assert_eq!(parse_hex_or_decimal_u64("100"), Some(100)); // decimal
-/// assert_eq!(parse_hex_or_decimal_u64("ff"), Some(255));  // hex fallback
+/// assert_eq!(parse_hex_or_decimal_u64("ff"), Some(255)); // hex fallback
 /// ```
 #[must_use]
 pub fn parse_hex_or_decimal_u64(s: &str) -> Option<u64> {

@@ -118,7 +118,8 @@ impl JsonRpcRequest {
     /// Parses a block number from JSON-RPC parameter format.
     ///
     /// Supports hex strings (0x prefix), decimal strings, and block tags.
-    /// Block tags "latest", "pending", "safe", and "finalized" map to `u64::MAX`, "earliest" maps to 0.
+    /// Block tags "latest", "pending", "safe", and "finalized" map to `u64::MAX`, "earliest" maps
+    /// to 0.
     fn parse_block_number(value: &serde_json::Value) -> Result<u64, ValidationError> {
         let s = value
             .as_str()
@@ -126,9 +127,9 @@ impl JsonRpcRequest {
 
         match BlockParameter::parse(s) {
             Ok(BlockRef::Number(n)) => Ok(n),
-            Ok(BlockRef::Tag(BlockTag::Latest | BlockTag::Pending | BlockTag::Safe | BlockTag::Finalized)) => {
-                Ok(u64::MAX)
-            }
+            Ok(BlockRef::Tag(
+                BlockTag::Latest | BlockTag::Pending | BlockTag::Safe | BlockTag::Finalized,
+            )) => Ok(u64::MAX),
             Ok(BlockRef::Tag(BlockTag::Earliest)) => Ok(0),
             Err(_) => Err(ValidationError::InvalidBlockParameter(s.to_string())),
         }

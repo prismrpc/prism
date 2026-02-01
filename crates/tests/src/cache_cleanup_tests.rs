@@ -295,4 +295,3 @@ async fn test_chain_state_reorg_foundation() {
     assert_eq!(num, 1000);
     assert_eq!(hash, hash_c, "Hash should be the new reorg hash");
 }
-
