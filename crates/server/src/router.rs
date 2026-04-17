@@ -243,8 +243,7 @@ async fn handle_batch_request(proxy_engine: Arc<ProxyEngine>, payload: Value) ->
             error: Some(JsonRpcError {
                 code: -32600,
                 message: format!(
-                    "Invalid Request: batch size {} exceeds maximum of {}",
-                    batch_size, MAX_BATCH_ITEMS
+                    "Invalid Request: batch size {batch_size} exceeds maximum of {MAX_BATCH_ITEMS}"
                 ),
                 data: None,
             }),
