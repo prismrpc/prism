@@ -45,6 +45,7 @@ fn extract_request_id(payload: &Value) -> Arc<Value> {
 }
 
 type BatchResponse = (StatusCode, [(&'static str, String); 1], Json<Value>);
+const MAX_BATCH_ITEMS: usize = 1000;
 
 /// Handles JSON-RPC requests (single or batched).
 ///
@@ -234,6 +235,28 @@ async fn handle_batch_request(proxy_engine: Arc<ProxyEngine>, payload: Value) ->
     let start_time = std::time::Instant::now();
     let batch_size = items.len();
     info!("Received batched RPC request with {} items", batch_size);
+
+    if batch_size > MAX_BATCH_ITEMS {
+        let error_response = JsonRpcResponse {
+            jsonrpc: JSONRPC_VERSION_COW,
+            result: None,
+            error: Some(JsonRpcError {
+                code: -32600,
+                message: format!(
+                    "Invalid Request: batch size {batch_size} exceeds maximum of {MAX_BATCH_ITEMS}"
+                ),
+                data: None,
+            }),
+            id: Arc::new(Value::Null),
+            cache_status: None,
+            serving_upstream: None,
+        };
+        return (
+            StatusCode::BAD_REQUEST,
+            [("x-cache-status", "MISS".to_string())],
+            Json(serialize_response(&error_response)),
+        );
+    }
 
     // Pre-allocate response vector with exact capacity to avoid reallocation
     let mut futures = Vec::with_capacity(batch_size);
