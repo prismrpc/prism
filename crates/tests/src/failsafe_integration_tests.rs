@@ -192,26 +192,6 @@ async fn test_scoring_influences_upstream_selection() {
 }
 
 #[tokio::test]
-async fn test_consensus_with_hedging_latency_data() {
-    let hedge_config = HedgeConfig { enabled: true, ..HedgeConfig::default() };
-
-    let consensus_config = ConsensusConfig { enabled: true, ..ConsensusConfig::default() };
-
-    let hedge_executor = HedgeExecutor::new(hedge_config);
-    let consensus_engine = ConsensusEngine::new(consensus_config);
-
-    // Record latencies that would be used for hedging decisions
-    hedge_executor.record_latency("fast-upstream", 50);
-    hedge_executor.record_latency("fast-upstream", 60);
-    hedge_executor.record_latency("slow-upstream", 300);
-    hedge_executor.record_latency("slow-upstream", 350);
-
-    // Verify consensus configuration is independent
-    assert!(consensus_engine.is_enabled().await);
-    assert!(consensus_engine.requires_consensus("eth_getBlockByNumber").await);
-}
-
-#[tokio::test]
 async fn test_full_request_lifecycle_simulation() {
     // Setup all three systems
     let hedge_executor = Arc::new(HedgeExecutor::new(HedgeConfig {

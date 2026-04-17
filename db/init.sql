@@ -1,8 +1,9 @@
 -- API Keys main table
 CREATE TABLE api_keys (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    key_hash TEXT NOT NULL UNIQUE,  -- SHA-256 hash of the actual key
-    name TEXT NOT NULL,              -- Human-readable identifier
+    key_hash TEXT NOT NULL UNIQUE,   -- Argon2 hash of the actual key
+    blind_index TEXT NOT NULL UNIQUE, -- SHA-256 (hex) for timing-safe lookups
+    name TEXT NOT NULL UNIQUE,       -- Human-readable identifier
     description TEXT,                 -- Optional description
     
     -- Rate limiting configuration
@@ -19,7 +20,8 @@ CREATE TABLE api_keys (
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at TIMESTAMP,
     is_active BOOLEAN NOT NULL DEFAULT 1,
-    expires_at TIMESTAMP              -- NULL means never expires
+    expires_at TIMESTAMP,             -- NULL means never expires
+    scope TEXT NOT NULL DEFAULT 'rpc' -- 'rpc' | 'admin' | 'full'
 );
 
 -- Method permissions table (allowlist approach)
@@ -49,6 +51,7 @@ CREATE TABLE api_key_usage (
 );
 
 -- Indexes for performance
+CREATE INDEX idx_api_keys_blind_index ON api_keys(blind_index);
 CREATE INDEX idx_api_keys_hash ON api_keys(key_hash);
 CREATE INDEX idx_api_keys_active ON api_keys(is_active);
 CREATE INDEX idx_api_key_methods_lookup ON api_key_methods(api_key_id, method_name);

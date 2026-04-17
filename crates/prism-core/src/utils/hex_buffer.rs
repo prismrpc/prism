@@ -1,4 +1,4 @@
-use std::{cell::RefCell, fmt::Write};
+use std::cell::RefCell;
 
 thread_local! {
     /// Thread-local buffer for hex formatting and parsing operations.
@@ -14,7 +14,7 @@ thread_local! {
 /// The callback receives a reference to the formatted string and must return immediately.
 ///
 /// # Performance
-/// Zero allocations - reuses thread-local buffer. Up to 2x faster than allocating methods.
+/// Zero allocations - reuses thread-local buffer. Uses optimized hex encoding from hex crate.
 ///
 /// # Examples
 /// ```ignore
@@ -29,8 +29,15 @@ where
         buf.clear();
         buf.push_str("0x");
 
-        for byte in bytes {
-            let _ = write!(&mut buf, "{byte:02x}");
+        // Reserve exact space needed for hex output
+        let hex_start = buf.len();
+        buf.reserve(bytes.len() * 2);
+
+        // SAFETY: We reserved exactly bytes.len() * 2 bytes
+        unsafe {
+            let vec = buf.as_mut_vec();
+            vec.set_len(hex_start + bytes.len() * 2);
+            hex::encode_to_slice(bytes, &mut vec[hex_start..]).expect("exact size allocated");
         }
 
         f(&buf)
@@ -51,8 +58,10 @@ where
         if value == 0 {
             buf.push_str("0x0");
         } else {
+            // Use format! for u64 - it's already fast and handles leading zeros correctly
+            use std::fmt::Write;
             buf.push_str("0x");
-            let _ = write!(&mut buf, "{value:x}");
+            let _ = write!(buf, "{value:x}");
         }
 
         f(&buf)
@@ -71,8 +80,13 @@ where
         buf.clear();
         buf.push_str("0x");
 
-        for byte in hash {
-            let _ = write!(&mut buf, "{byte:02x}");
+        let hex_start = buf.len();
+        buf.reserve(64); // 32 bytes * 2
+
+        unsafe {
+            let vec = buf.as_mut_vec();
+            vec.set_len(hex_start + 64);
+            hex::encode_to_slice(hash, &mut vec[hex_start..]).expect("exact size allocated");
         }
 
         f(&buf)
@@ -91,8 +105,13 @@ where
         buf.clear();
         buf.push_str("0x");
 
-        for byte in address {
-            let _ = write!(&mut buf, "{byte:02x}");
+        let hex_start = buf.len();
+        buf.reserve(40); // 20 bytes * 2
+
+        unsafe {
+            let vec = buf.as_mut_vec();
+            vec.set_len(hex_start + 40);
+            hex::encode_to_slice(address, &mut vec[hex_start..]).expect("exact size allocated");
         }
 
         f(&buf)
@@ -120,129 +139,124 @@ impl serde::Serialize for HexSerializer<'_> {
     where
         S: serde::Serializer,
     {
-        let mut output = String::with_capacity(2 + self.bytes.len() * 2);
-        output.push_str("0x");
-        for byte in self.bytes {
-            write!(&mut output, "{byte:02x}").map_err(serde::ser::Error::custom)?;
-        }
-        serializer.serialize_str(&output)
+        HEX_BUFFER.with(|buffer| {
+            let mut buf = buffer.borrow_mut();
+            buf.clear();
+            buf.push_str("0x");
+
+            let hex_start = buf.len();
+            buf.reserve(self.bytes.len() * 2);
+
+            // SAFETY: We reserved exactly bytes.len() * 2 bytes
+            unsafe {
+                let vec = buf.as_mut_vec();
+                vec.set_len(hex_start + self.bytes.len() * 2);
+                hex::encode_to_slice(self.bytes, &mut vec[hex_start..])
+                    .map_err(|e| serde::ser::Error::custom(format!("hex encoding failed: {e}")))?;
+            }
+
+            serializer.serialize_str(&buf)
+        })
     }
 }
 
 /// Formats bytes as hex with "0x" prefix, returning an owned `String`.
 ///
-/// This is the primary formatting function that reuses thread-local buffers to minimize
-/// allocations. Prefer callback-based `with_hex_format` when the string doesn't need to escape the
-/// current scope.
+/// Uses optimized hex encoding from the hex crate with a single allocation.
+/// Prefer callback-based `with_hex_format` when the string doesn't need to escape the
+/// current scope (zero allocations).
 ///
 /// # Performance
-/// Reuses thread-local buffer for formatting, only cloning the final result.
-///
-/// # Panics
-/// Panics if the string buffer fails to write (extremely unlikely).
+/// Single allocation with optimized SIMD-accelerated hex encoding.
 #[must_use]
 pub fn format_hex(bytes: &[u8]) -> String {
-    HEX_BUFFER.with(|buffer| {
-        let mut buf = buffer.borrow_mut();
-        buf.clear();
-        buf.push_str("0x");
+    let mut output = String::with_capacity(2 + bytes.len() * 2);
+    output.push_str("0x");
 
-        for byte in bytes {
-            let _ = write!(&mut buf, "{byte:02x}");
-        }
+    let hex_start = output.len();
+    output.reserve(bytes.len() * 2);
 
-        buf.clone()
-    })
+    // SAFETY: We reserved exactly bytes.len() * 2 bytes
+    unsafe {
+        let vec = output.as_mut_vec();
+        vec.set_len(hex_start + bytes.len() * 2);
+        hex::encode_to_slice(bytes, &mut vec[hex_start..]).expect("exact size allocated");
+    }
+
+    output
 }
 
 /// Formats a `u64` as hex with "0x" prefix, returning an owned `String`.
 ///
 /// Optimized for block numbers and other numeric values. Zero is formatted as "0x0".
-///
-/// # Panics
-/// Panics if the string buffer fails to write (extremely unlikely).
 #[must_use]
 pub fn format_hex_u64(value: u64) -> String {
-    HEX_BUFFER.with(|buffer| {
-        let mut buf = buffer.borrow_mut();
-        buf.clear();
-
-        if value == 0 {
-            buf.push_str("0x0");
-        } else {
-            buf.push_str("0x");
-            let _ = write!(&mut buf, "{value:x}");
-        }
-
-        buf.clone()
-    })
+    if value == 0 {
+        "0x0".to_string()
+    } else {
+        // Use standard formatting for u64 - it's already fast and handles leading zeros correctly
+        format!("0x{value:x}")
+    }
 }
 
 /// Formats a 32-byte hash with "0x" prefix, returning an owned `String`.
 ///
 /// Optimized for transaction and block hashes.
-///
-/// # Panics
-/// Panics if the string buffer fails to write (extremely unlikely).
 #[must_use]
 pub fn format_hash32(hash: &[u8; 32]) -> String {
-    HEX_BUFFER.with(|buffer| {
-        let mut buf = buffer.borrow_mut();
-        buf.clear();
-        buf.push_str("0x");
+    let mut output = String::with_capacity(66); // 0x + 64 hex chars
+    output.push_str("0x");
 
-        for byte in hash {
-            let _ = write!(&mut buf, "{byte:02x}");
-        }
+    let hex_start = output.len();
+    output.reserve(64);
 
-        buf.clone()
-    })
+    unsafe {
+        let vec = output.as_mut_vec();
+        vec.set_len(hex_start + 64);
+        hex::encode_to_slice(hash, &mut vec[hex_start..]).expect("exact size allocated");
+    }
+
+    output
 }
 
 /// Formats a 20-byte address with "0x" prefix, returning an owned `String`.
 ///
 /// Optimized for Ethereum addresses.
-///
-/// # Panics
-/// Panics if the string buffer fails to write (extremely unlikely).
 #[must_use]
 pub fn format_address(address: &[u8; 20]) -> String {
-    HEX_BUFFER.with(|buffer| {
-        let mut buf = buffer.borrow_mut();
-        buf.clear();
-        buf.push_str("0x");
+    let mut output = String::with_capacity(42); // 0x + 40 hex chars
+    output.push_str("0x");
 
-        for byte in address {
-            let _ = write!(&mut buf, "{byte:02x}");
-        }
+    let hex_start = output.len();
+    output.reserve(40);
 
-        buf.clone()
-    })
+    unsafe {
+        let vec = output.as_mut_vec();
+        vec.set_len(hex_start + 40);
+        hex::encode_to_slice(address, &mut vec[hex_start..]).expect("exact size allocated");
+    }
+
+    output
 }
 
 /// Formats large hex data with "0x" prefix.
 ///
-/// Used for transaction calldata and other large payloads. Grows the buffer
-/// capacity as needed for very large payloads.
+/// Used for transaction calldata and other large payloads.
 #[must_use]
 pub fn format_hex_large(bytes: &[u8]) -> String {
-    HEX_BUFFER.with(|buffer| {
-        let mut buf = buffer.borrow_mut();
-        buf.clear();
+    let mut output = String::with_capacity(2 + bytes.len() * 2);
+    output.push_str("0x");
 
-        let needed = 2 + bytes.len() * 2;
-        let current_capacity = buf.capacity();
-        if current_capacity < needed {
-            buf.reserve(needed - current_capacity);
-        }
+    let hex_start = output.len();
+    output.reserve(bytes.len() * 2);
 
-        buf.push_str("0x");
-        for byte in bytes {
-            let _ = write!(&mut buf, "{byte:02x}");
-        }
+    unsafe {
+        let vec = output.as_mut_vec();
+        vec.set_len(hex_start + bytes.len() * 2);
+        hex::encode_to_slice(bytes, &mut vec[hex_start..]).expect("exact size allocated");
+    }
 
-        buf.clone()
-    })
+    output
 }
 
 /// Returns current capacity and length of the hex formatting buffer.
@@ -325,20 +339,108 @@ fn hex_digit_to_u8(c: u8) -> Option<u8> {
     }
 }
 
+/// Parses hex or decimal string to `u64`.
+///
+/// Handles "0x" prefix for hex. For unprefixed strings, tries decimal parsing first,
+/// then falls back to hex. Returns `None` if invalid or overflow.
+///
+/// # Examples
+///
+/// ```
+/// # use prism_core::utils::hex_buffer::parse_hex_or_decimal_u64;
+/// assert_eq!(parse_hex_or_decimal_u64("0xff"), Some(255));
+/// assert_eq!(parse_hex_or_decimal_u64("100"), Some(100)); // decimal
+/// assert_eq!(parse_hex_or_decimal_u64("ff"), Some(255)); // hex fallback
+/// ```
+#[must_use]
+pub fn parse_hex_or_decimal_u64(s: &str) -> Option<u64> {
+    if let Some(hex_str) = s.strip_prefix("0x") {
+        u64::from_str_radix(hex_str, 16).ok()
+    } else {
+        // Try decimal first, then hex fallback
+        s.parse::<u64>().ok().or_else(|| u64::from_str_radix(s, 16).ok())
+    }
+}
+
+/// Parses hex or decimal string to `u32`.
+///
+/// Handles "0x" prefix for hex. For unprefixed strings, tries decimal parsing first,
+/// then falls back to hex. Returns `None` if invalid or overflow.
+#[must_use]
+pub fn parse_hex_or_decimal_u32(s: &str) -> Option<u32> {
+    if let Some(hex_str) = s.strip_prefix("0x") {
+        u32::from_str_radix(hex_str, 16).ok()
+    } else {
+        // Try decimal first, then hex fallback
+        s.parse::<u32>().ok().or_else(|| u32::from_str_radix(s, 16).ok())
+    }
+}
+
+/// Parses variable-length hex string to a 32-byte big-endian array (uint256).
+///
+/// Handles values like "0x0", "0xb59b9f7800", or full 32-byte hashes.
+/// The result is left-padded with zeros (big-endian format).
+///
+/// Returns `None` if the hex string is empty, longer than 64 characters, or contains invalid hex.
+#[must_use]
+pub fn hex_to_u256(hex: &str) -> Option<[u8; 32]> {
+    let hex_str = hex.strip_prefix("0x").unwrap_or(hex);
+
+    // Handle empty or too long values
+    if hex_str.is_empty() || hex_str.len() > 64 {
+        return None;
+    }
+
+    HEX_BUFFER.with(|buffer| {
+        let mut buf = buffer.borrow_mut();
+        buf.clear();
+
+        // Pad odd-length hex strings with leading zero
+        if hex_str.len() % 2 == 1 {
+            buf.push('0');
+        }
+        buf.push_str(hex_str);
+
+        let bytes = hex::decode(&*buf).ok()?;
+
+        // Left-pad to 32 bytes (big-endian)
+        let mut result = [0u8; 32];
+        let start = 32 - bytes.len();
+        result[start..].copy_from_slice(&bytes);
+
+        Some(result)
+    })
+}
+
 #[cfg(test)]
 mod hex_buffer_tests {
     use super::*;
 
     #[test]
     fn test_hex_buffer_reuse() {
+        // Test that callback-based functions reuse the thread-local buffer
+        let result1 = with_hex_format(&[0xDE, 0xAD, 0xBE, 0xEF], |hex| {
+            assert_eq!(hex, "0xdeadbeef");
+            hex.len()
+        });
+        assert_eq!(result1, 10);
+
+        let result2 = with_hex_format(&[0xCA, 0xFE, 0xBA, 0xBE], |hex| {
+            assert_eq!(hex, "0xcafebabe");
+            hex.len()
+        });
+        assert_eq!(result2, 10);
+
+        // Verify buffer was reused (has content from operations)
+        let (_capacity, len) = get_hex_buffer_stats();
+        assert_eq!(len, 10, "Buffer should contain last formatted value");
+
+        // Test owned String functions use direct allocation (no buffer reuse)
         let hex1 = format_hex(&[0xDE, 0xAD, 0xBE, 0xEF]);
         assert_eq!(hex1, "0xdeadbeef");
 
         let hex2 = format_hex(&[0xCA, 0xFE, 0xBA, 0xBE]);
         assert_eq!(hex2, "0xcafebabe");
-
-        let (_total, reused) = get_hex_buffer_stats();
-        assert!(reused > 0, "Buffer should have been reused");
     }
 
     // NOTE: Performance benchmarks have been moved to benches/hex_benchmarks.rs

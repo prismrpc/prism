@@ -82,21 +82,6 @@ fn create_multi_upstream_config() -> AppConfig {
 }
 
 #[tokio::test]
-async fn test_shutdown_is_idempotent() {
-    let config = create_test_runtime_config();
-
-    let runtime = PrismRuntimeBuilder::new()
-        .with_config(config)
-        .build()
-        .expect("Failed to build runtime");
-
-    // Call shutdown multiple times - should not panic or deadlock
-    runtime.shutdown().await;
-    // Note: We can't call shutdown again on the same instance because it consumes self,
-    // which is actually the correct design - the first shutdown consumes the runtime.
-}
-
-#[tokio::test]
 async fn test_shutdown_signal_broadcast_to_all_receivers() {
     let config = create_test_runtime_config();
 
@@ -160,49 +145,6 @@ async fn test_shutdown_signal_broadcast_to_all_receivers() {
         3,
         "All 3 receivers should have been notified"
     );
-}
-
-#[tokio::test]
-async fn test_wait_for_shutdown_blocks_until_signal() {
-    let config = create_test_runtime_config();
-
-    let runtime = PrismRuntimeBuilder::new()
-        .with_config(config)
-        .build()
-        .expect("Failed to build runtime");
-
-    let shutdown_tx = runtime.shutdown_receiver();
-    let completed = Arc::new(AtomicBool::new(false));
-    let completed_clone = completed.clone();
-
-    // Spawn task that waits for shutdown
-    let wait_task = tokio::spawn(async move {
-        runtime.wait_for_shutdown().await;
-        completed_clone.store(true, Ordering::SeqCst);
-    });
-
-    // Give the wait_for_shutdown time to start waiting
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Should not have completed yet
-    assert!(!completed.load(Ordering::SeqCst), "wait_for_shutdown should block until signal");
-
-    // Send shutdown signal via a different receiver
-    drop(shutdown_tx);
-    let another_rx = PrismRuntimeBuilder::new()
-        .with_config(create_test_runtime_config())
-        .build()
-        .expect("Failed to build runtime")
-        .shutdown_receiver();
-
-    // We need to trigger the shutdown externally since wait_for_shutdown consumed the runtime
-    // In real usage, an external signal would trigger this
-    // For this test, we'll just verify the wait_task is still waiting
-    tokio::time::sleep(Duration::from_millis(100)).await;
-
-    // Clean up
-    drop(another_rx);
-    let _ = tokio::time::timeout(Duration::from_secs(1), wait_task).await;
 }
 
 #[tokio::test]

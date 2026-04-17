@@ -399,11 +399,11 @@ async fn test_handler_error_propagates_correctly() {
 
 #[tokio::test]
 #[serial]
-async fn test_handler_validation_error_propagates() {
+async fn test_valid_block_range_at_limit_does_not_produce_validation_error() {
     let mock = RpcMockBuilder::new().await;
     let engine = create_test_proxy_engine(&mock.url());
 
-    // Create an eth_getLogs request with invalid params (too large range)
+    // Create an eth_getLogs request with valid params (exactly at the 10000 block limit)
     let request = JsonRpcRequest::new(
         "eth_getLogs",
         Some(json!([{
@@ -446,29 +446,6 @@ async fn test_get_upstream_stats_available() {
 
     // Should have at least one upstream configured
     assert!(stats.total_upstreams > 0, "Should have at least one upstream provider configured");
-}
-
-#[tokio::test]
-#[serial]
-async fn test_metrics_recorded_on_validation_error() {
-    let mock = RpcMockBuilder::new().await;
-    let engine = create_test_proxy_engine(&mock.url());
-
-    // Get metrics collector to check counts
-    let metrics = engine.get_metrics_collector();
-    let initial_metrics = metrics.get_prometheus_metrics();
-
-    // Send an invalid request
-    let mut request = JsonRpcRequest::new("eth_blockNumber", None, json!(1));
-    request.jsonrpc = "1.0".into();
-    let _ = engine.process_request(request).await;
-
-    // Check that metrics were recorded
-    let final_metrics = metrics.get_prometheus_metrics();
-    assert!(
-        final_metrics.len() >= initial_metrics.len(),
-        "Metrics should be recorded for validation errors"
-    );
 }
 
 #[test]

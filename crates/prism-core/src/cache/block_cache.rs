@@ -2,7 +2,13 @@ use crate::cache::types::{BlockBody, BlockHeader, CacheStats};
 use ahash::RandomState;
 use dashmap::DashMap;
 use lru::LruCache;
-use std::{num::NonZeroUsize, sync::Arc};
+use std::{
+    num::NonZeroUsize,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{info, trace};
@@ -49,12 +55,12 @@ pub struct BlockCache {
     hot_window: Arc<RwLock<HotWindow>>,
 
     stats: Arc<RwLock<CacheStats>>,
-    stats_dirty: std::sync::atomic::AtomicBool,
+    stats_dirty: AtomicBool,
 
     /// Atomic hit counter for lock-free metrics
-    hits: std::sync::atomic::AtomicU64,
+    hits: AtomicU64,
     /// Atomic miss counter for lock-free metrics
-    misses: std::sync::atomic::AtomicU64,
+    misses: AtomicU64,
 }
 
 /// Circular buffer for recent blocks with O(1) insert/lookup.
@@ -287,7 +293,7 @@ impl BlockCache {
         let mut lru = self.header_lru.write().await;
         lru.put(header_arc.hash, header_arc);
 
-        self.stats_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stats_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Inserts a block body. Only updates hot window if the corresponding header exists.
@@ -314,7 +320,7 @@ impl BlockCache {
         let mut lru = self.body_lru.write().await;
         lru.put(body_arc.hash, body_arc);
 
-        self.stats_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stats_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Inserts multiple block headers in a single batch operation.
@@ -358,7 +364,7 @@ impl BlockCache {
             }
         }
 
-        self.stats_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stats_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Inserts multiple block bodies in a single batch operation.
@@ -404,7 +410,7 @@ impl BlockCache {
             }
         }
 
-        self.stats_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stats_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Retrieves a block header by number, checking hot window first for recent blocks.
@@ -455,10 +461,10 @@ impl BlockCache {
         let body = header.as_ref().and_then(|h| self.get_body_by_hash(&h.hash));
 
         if let (Some(h), Some(b)) = (header, body) {
-            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.hits.fetch_add(1, Ordering::Relaxed);
             Some((h, b))
         } else {
-            self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.misses.fetch_add(1, Ordering::Relaxed);
             None
         }
     }
@@ -472,10 +478,10 @@ impl BlockCache {
         let body = header.as_ref().and_then(|_| self.get_body_by_hash(block_hash));
 
         if let (Some(h), Some(b)) = (header, body) {
-            self.hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.hits.fetch_add(1, Ordering::Relaxed);
             Some((h, b))
         } else {
-            self.misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.misses.fetch_add(1, Ordering::Relaxed);
             None
         }
     }
@@ -511,7 +517,7 @@ impl BlockCache {
             }
         }
 
-        self.stats_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stats_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Clears all cached data. Used when switching authentication contexts.
@@ -539,7 +545,7 @@ impl BlockCache {
             hot_window.start_index = 0;
         }
 
-        self.stats_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stats_dirty.store(true, Ordering::Relaxed);
     }
 
     /// Updates the canonical chain pointer, typically after a reorg.
@@ -565,8 +571,8 @@ impl BlockCache {
     pub async fn get_stats(&self) -> CacheStats {
         // Fast path: check dirty flag with cheap load operation first
         // Only use swap (expensive read-modify-write) if actually dirty
-        if self.stats_dirty.load(std::sync::atomic::Ordering::Relaxed) &&
-            self.stats_dirty.swap(false, std::sync::atomic::Ordering::Relaxed)
+        if self.stats_dirty.load(Ordering::Relaxed) &&
+            self.stats_dirty.swap(false, Ordering::Relaxed)
         {
             self.compute_stats_internal().await;
         }
@@ -586,20 +592,20 @@ impl BlockCache {
         stats.header_cache_size = header_cache_size;
         stats.body_cache_size = body_cache_size;
         stats.hot_window_size = hot_window_size;
-        stats.block_cache_hits = self.hits.load(std::sync::atomic::Ordering::Relaxed);
-        stats.block_cache_misses = self.misses.load(std::sync::atomic::Ordering::Relaxed);
+        stats.block_cache_hits = self.hits.load(Ordering::Relaxed);
+        stats.block_cache_misses = self.misses.load(Ordering::Relaxed);
     }
 
     /// Returns the current hit count for this cache.
     #[must_use]
     pub fn hit_count(&self) -> u64 {
-        self.hits.load(std::sync::atomic::Ordering::Relaxed)
+        self.hits.load(Ordering::Relaxed)
     }
 
     /// Returns the current miss count for this cache.
     #[must_use]
     pub fn miss_count(&self) -> u64 {
-        self.misses.load(std::sync::atomic::Ordering::Relaxed)
+        self.misses.load(Ordering::Relaxed)
     }
 
     /// Removes blocks older than the safe head minus retention period.
@@ -687,7 +693,7 @@ impl BlockCache {
                 }
             }
         }
-        self.stats_dirty.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.stats_dirty.store(true, Ordering::Relaxed);
     }
 }
 

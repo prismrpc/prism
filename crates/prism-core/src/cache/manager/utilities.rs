@@ -5,7 +5,7 @@
 //! - Block range extraction from log filter params
 //! - Fetch state diagnostics and cleanup
 
-use crate::{cache::CacheManager, types::BlockRange};
+use crate::{cache::CacheManager, types::BlockRange, utils::BlockParameter};
 use tracing::warn;
 
 /// Parses a block number from a string, supporting both hex and decimal formats.
@@ -50,9 +50,7 @@ use tracing::warn;
 #[inline]
 #[must_use]
 pub fn parse_block_number(s: &str) -> Option<u64> {
-    s.strip_prefix("0x")
-        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
-        .or_else(|| s.parse::<u64>().ok())
+    BlockParameter::parse_number(s)
 }
 
 /// Extracts a block range from `eth_getLogs` JSON-RPC filter parameters.

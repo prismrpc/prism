@@ -1,7 +1,10 @@
 use crate::cache::types::{CacheStats, LogRecord, ReceiptRecord, TransactionRecord};
 use ahash::RandomState;
 use dashmap::DashMap;
-use std::sync::Arc;
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tracing::{info, trace};
@@ -57,13 +60,13 @@ pub struct TransactionCache {
     stats: Arc<RwLock<CacheStats>>,
 
     /// Atomic hit counter for transactions
-    tx_hits: std::sync::atomic::AtomicU64,
+    tx_hits: AtomicU64,
     /// Atomic miss counter for transactions
-    tx_misses: std::sync::atomic::AtomicU64,
+    tx_misses: AtomicU64,
     /// Atomic hit counter for receipts
-    receipt_hits: std::sync::atomic::AtomicU64,
+    receipt_hits: AtomicU64,
     /// Atomic miss counter for receipts
-    receipt_misses: std::sync::atomic::AtomicU64,
+    receipt_misses: AtomicU64,
 }
 
 impl TransactionCache {
@@ -164,10 +167,10 @@ impl TransactionCache {
     #[must_use]
     pub fn get_transaction(&self, tx_hash: &[u8; 32]) -> Option<Arc<TransactionRecord>> {
         if let Some(tx) = self.transactions_by_hash.get(tx_hash) {
-            self.tx_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.tx_hits.fetch_add(1, Ordering::Relaxed);
             Some(Arc::clone(&tx))
         } else {
-            self.tx_misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.tx_misses.fetch_add(1, Ordering::Relaxed);
             None
         }
     }
@@ -175,10 +178,10 @@ impl TransactionCache {
     #[must_use]
     pub fn get_receipt(&self, tx_hash: &[u8; 32]) -> Option<Arc<ReceiptRecord>> {
         if let Some(rcpt) = self.receipts_by_hash.get(tx_hash) {
-            self.receipt_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.receipt_hits.fetch_add(1, Ordering::Relaxed);
             Some(Arc::clone(&rcpt))
         } else {
-            self.receipt_misses.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.receipt_misses.fetch_add(1, Ordering::Relaxed);
             None
         }
     }
@@ -324,34 +327,34 @@ impl TransactionCache {
         let mut stats = self.stats.write().await;
         stats.transaction_cache_size = self.transactions_by_hash.len();
         stats.receipt_cache_size = self.receipts_by_hash.len();
-        stats.transaction_cache_hits = self.tx_hits.load(std::sync::atomic::Ordering::Relaxed);
-        stats.transaction_cache_misses = self.tx_misses.load(std::sync::atomic::Ordering::Relaxed);
-        stats.receipt_cache_hits = self.receipt_hits.load(std::sync::atomic::Ordering::Relaxed);
-        stats.receipt_cache_misses = self.receipt_misses.load(std::sync::atomic::Ordering::Relaxed);
+        stats.transaction_cache_hits = self.tx_hits.load(Ordering::Relaxed);
+        stats.transaction_cache_misses = self.tx_misses.load(Ordering::Relaxed);
+        stats.receipt_cache_hits = self.receipt_hits.load(Ordering::Relaxed);
+        stats.receipt_cache_misses = self.receipt_misses.load(Ordering::Relaxed);
     }
 
     /// Returns the current transaction hit count.
     #[must_use]
     pub fn transaction_hit_count(&self) -> u64 {
-        self.tx_hits.load(std::sync::atomic::Ordering::Relaxed)
+        self.tx_hits.load(Ordering::Relaxed)
     }
 
     /// Returns the current transaction miss count.
     #[must_use]
     pub fn transaction_miss_count(&self) -> u64 {
-        self.tx_misses.load(std::sync::atomic::Ordering::Relaxed)
+        self.tx_misses.load(Ordering::Relaxed)
     }
 
     /// Returns the current receipt hit count.
     #[must_use]
     pub fn receipt_hit_count(&self) -> u64 {
-        self.receipt_hits.load(std::sync::atomic::Ordering::Relaxed)
+        self.receipt_hits.load(Ordering::Relaxed)
     }
 
     /// Returns the current receipt miss count.
     #[must_use]
     pub fn receipt_miss_count(&self) -> u64 {
-        self.receipt_misses.load(std::sync::atomic::Ordering::Relaxed)
+        self.receipt_misses.load(Ordering::Relaxed)
     }
 
     /// Prunes transactions to stay within capacity by evicting from oldest blocks first.
